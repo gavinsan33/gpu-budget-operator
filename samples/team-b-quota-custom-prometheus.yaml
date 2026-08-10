@@ -1,0 +1,14 @@
+apiVersion: gpuquota.example.com/v1alpha1
+kind: GpuQuota
+metadata:
+  name: team-b-quota
+  namespace: team-b
+spec:
+  gpuLimit: 8
+  prometheusURL: http://thanos-query.observability.svc:9090
+  # Override the default query, e.g. to weight by GPU memory instead of util.
+  query: 'count(max by (UUID) (DCGM_FI_DEV_GPU_UTIL{namespace="__NAMESPACE__"} > 0))'
+  checkInterval: 30s
+  gracePeriod: 1m
+  cooldownPeriod: 10m
+  autoRestore: false

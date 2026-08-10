@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-quota-operator-controller-manager
+  namespace: gpu-quota-operator-system
+  labels:
+    control-plane: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: gpu-quota-operator-controller-manager
+      containers:
+      - name: manager
+        image: gpu-quota-operator:latest
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --leader-elect
+        # Point at your in-cluster Prometheus/Thanos that scrapes dcgm-exporter.
+        # Individual GpuQuotas can override this via spec.prometheusURL.
+        - --default-prometheus-url=http://prometheus-k8s.monitoring.svc:9090
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+      securityContext:
+        runAsNonRoot: true

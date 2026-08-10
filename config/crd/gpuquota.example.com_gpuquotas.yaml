@@ -1,0 +1,231 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: gpuquotas.gpuquota.example.com
+spec:
+  group: gpuquota.example.com
+  names:
+    kind: GpuQuota
+    listKind: GpuQuotaList
+    plural: gpuquotas
+    shortNames:
+    - gq
+    singular: gpuquota
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.gpuLimit
+      name: Limit
+      type: integer
+    - jsonPath: .status.currentUsage
+      name: Usage
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GpuQuotaSpec defines the GPU budget for the namespace the
+              GpuQuota lives in.
+            properties:
+              autoRestore:
+                default: true
+                description: |-
+                  AutoRestore controls whether workloads that were scaled down/suspended
+                  by this controller are automatically restored once usage falls back
+                  under GPULimit.
+                type: boolean
+              checkInterval:
+                default: 1m
+                description: |-
+                  CheckInterval is how often usage is re-evaluated while the namespace
+                  is within quota.
+                type: string
+              cooldownPeriod:
+                default: 5m
+                description: |-
+                  CooldownPeriod is the minimum time between enforcement actions against
+                  the same namespace, to avoid repeatedly thrashing workloads.
+                type: string
+              gpuLimit:
+                description: |-
+                  GPULimit is the maximum number of GPUs that may be concurrently active
+                  (i.e. reporting non-zero utilization) across the namespace.
+                format: int32
+                minimum: 0
+                type: integer
+              gracePeriod:
+                default: 2m
+                description: |-
+                  GracePeriod is how long usage must remain continuously over GPULimit
+                  before the operator enforces the quota. This absorbs short bursts.
+                type: string
+              prometheusURL:
+                description: |-
+                  PrometheusURL overrides the operator-wide default Prometheus/Thanos
+                  endpoint used to evaluate GPU usage for this namespace.
+                type: string
+              query:
+                description: |-
+                  Query overrides the default PromQL used to compute current GPU usage.
+                  The string "__NAMESPACE__" is substituted with the namespace name.
+                  The query must return a single scalar/vector sample representing the
+                  number of GPUs currently in use by the namespace.
+                type: string
+            required:
+            - gpuLimit
+            type: object
+          status:
+            description: GpuQuotaStatus reports the observed GPU usage and any enforcement
+              taken.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              currentUsage:
+                description: CurrentUsage is the most recently observed number of
+                  active GPUs.
+                format: int32
+                type: integer
+              enforcedResources:
+                description: |-
+                  EnforcedResources lists workloads currently scaled down/suspended by
+                  this controller and awaiting restoration.
+                items:
+                  description: EnforcementAction records a single action taken against
+                    a workload.
+                  properties:
+                    action:
+                      description: 'Action taken: "ScaledToZero", "Suspended", or
+                        "Deleted".'
+                      type: string
+                    apiVersion:
+                      description: APIVersion of the affected resource.
+                      type: string
+                    enforcedAt:
+                      description: EnforcedAt is when the action was taken.
+                      format: date-time
+                      type: string
+                    kind:
+                      description: Kind of the affected resource (Deployment, InferenceService,
+                        JobSet).
+                      type: string
+                    name:
+                      description: Name of the affected resource.
+                      type: string
+                  required:
+                  - action
+                  - apiVersion
+                  - enforcedAt
+                  - kind
+                  - name
+                  type: object
+                type: array
+              firstViolationTime:
+                description: |-
+                  FirstViolationTime is when usage was first observed over GPULimit
+                  during the current violation streak. Cleared once compliant again.
+                format: date-time
+                type: string
+              lastCheckedTime:
+                description: LastCheckedTime is when usage was last queried from Prometheus.
+                format: date-time
+                type: string
+              lastEnforcementTime:
+                description: LastEnforcementTime is when enforcement last ran against
+                  this namespace.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation last reconciled.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the current compliance state.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

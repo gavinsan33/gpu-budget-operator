@@ -1,0 +1,11 @@
+apiVersion: gpuquota.example.com/v1alpha1
+kind: GpuQuota
+metadata:
+  name: team-a-quota
+  namespace: team-a
+spec:
+  gpuLimit: 4
+  checkInterval: 1m
+  gracePeriod: 2m
+  cooldownPeriod: 5m
+  autoRestore: true
