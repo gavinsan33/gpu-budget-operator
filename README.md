@@ -105,6 +105,25 @@ override.
    (default), previously enforced workloads are restored to their original
    replica counts / suspend state.
 
+### Enforcement actions by workload kind
+
+Each workload kind has a different native "scale to zero" primitive, so the
+operator uses a different mechanism per kind rather than one generic action:
+
+| Workload kind | "Kill" mechanism | Reversible? | Restore annotation |
+|---|---|---|---|
+| `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
+| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume, same as `batch/v1.Job` | `gpuquota.example.com/original-suspend` |
+| `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpuquota.example.com/original-replica-spec` |
+
+Only workloads that actually request `nvidia.com/gpu` (in any container, at
+any nesting depth) are touched — non-GPU workloads in an over-quota namespace
+are left running. Nothing is ever deleted; every action above is undone
+automatically once the namespace's usage drops back under `gpuLimit`, unless
+`spec.autoRestore: false`. See `CLAUDE.md` for why each mechanism was chosen
+over the alternatives (e.g. why both `minReplicas` and `maxReplicas` are
+zeroed for InferenceServices, not just `minReplicas`).
+
 See `CLAUDE.md` for the full architecture and non-obvious implementation
 details.
 
