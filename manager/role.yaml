@@ -40,6 +40,16 @@ rules:
   - update
   - patch
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
   - jobset.x-k8s.io
   resources:
   - jobsets

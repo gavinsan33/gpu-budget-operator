@@ -230,6 +230,39 @@ func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T
 	}
 }
 
+func gpuReplicaSet(namespace, name string, replicas int32, owned bool) *appsv1.ReplicaSet {
+	rs := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "main",
+						Image: "example.com/model:latest",
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+	if owned {
+		rs.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+			Name:       "some-deployment",
+			UID:        "some-uid",
+		}}
+	}
+	return rs
+}
+
 func gpuPod(namespace, name string, owned bool) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -300,6 +333,50 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected EnforcedResources to record bare-gpu-pod deletion, got %+v", got.Status.EnforcedResources)
+	}
+}
+
+func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t *testing.T) {
+	prom := promStub(t, 10)
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	standaloneRS := gpuReplicaSet("team-a", "standalone-rs", 3, false)
+	ownedRS := gpuReplicaSet("team-a", "owned-rs", 3, true)
+	past := metav1.NewTime(time.Now().Add(-time.Hour))
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			GPULimit:      4,
+			PrometheusURL: prom.URL,
+			GracePeriod:   metav1.Duration{Duration: time.Minute},
+		},
+		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneRS, ownedRS, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var gotStandalone appsv1.ReplicaSet
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(standaloneRS), &gotStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if *gotStandalone.Spec.Replicas != 0 {
+		t.Fatalf("expected standalone replicaset scaled to 0, got %d replicas", *gotStandalone.Spec.Replicas)
+	}
+	if gotStandalone.Annotations["gpuquota.example.com/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", gotStandalone.Annotations["gpuquota.example.com/original-replicas"])
+	}
+
+	var gotOwned appsv1.ReplicaSet
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ownedRS), &gotOwned); err != nil {
+		t.Fatal(err)
+	}
+	if *gotOwned.Spec.Replicas != 3 {
+		t.Fatalf("expected deployment-owned replicaset untouched, got %d replicas", *gotOwned.Spec.Replicas)
 	}
 }
 

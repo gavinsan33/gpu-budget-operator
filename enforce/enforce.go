@@ -25,8 +25,9 @@ const (
 	// GPUResourceName is the extended resource requested by GPU workloads.
 	GPUResourceName = corev1.ResourceName("nvidia.com/gpu")
 
-	// AnnotationOriginalReplicas remembers a Deployment's replica count
-	// before it was scaled to zero, so it can be restored later.
+	// AnnotationOriginalReplicas remembers a Deployment's or standalone
+	// ReplicaSet's replica count before it was scaled to zero, so it can be
+	// restored later.
 	AnnotationOriginalReplicas = "gpuquota.example.com/original-replicas"
 
 	// AnnotationOriginalReplicaSpec remembers an InferenceService component's
@@ -67,11 +68,12 @@ type Enforcer struct {
 	Client client.Client
 }
 
-// EnforceNamespace scales every GPU-requesting Deployment to zero replicas,
-// suspends every GPU-requesting JobSet, zeroes the replica bounds of every
-// GPU-requesting InferenceService, and deletes standalone GPU Pods (ones with
-// no controlling owner, since a bare Pod can't be scaled or suspended) in the
-// namespace. It returns the set of resources it acted on.
+// EnforceNamespace scales every GPU-requesting Deployment (and every
+// standalone GPU-requesting ReplicaSet not owned by a Deployment) to zero
+// replicas, suspends every GPU-requesting JobSet, zeroes the replica bounds
+// of every GPU-requesting InferenceService, and deletes standalone GPU Pods
+// (ones with no controlling owner, since a bare Pod can't be scaled or
+// suspended) in the namespace. It returns the set of resources it acted on.
 func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
 	var enforced []gpuquotav1alpha1.EnforcedResource
 
@@ -80,6 +82,12 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 		return enforced, err
 	}
 	enforced = append(enforced, deployments...)
+
+	replicaSets, err := e.enforceReplicaSets(ctx, namespace)
+	if err != nil {
+		return enforced, err
+	}
+	enforced = append(enforced, replicaSets...)
 
 	jobSets, err := e.enforceJobSets(ctx, namespace)
 	if err != nil {
@@ -113,6 +121,8 @@ func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enfor
 		switch res.Kind {
 		case "Deployment":
 			err = e.restoreDeployment(ctx, namespace, res.Name)
+		case "ReplicaSet":
+			err = e.restoreReplicaSet(ctx, namespace, res.Name)
 		case "JobSet":
 			err = e.restoreJobSet(ctx, namespace, res.Name)
 		case "InferenceService":
@@ -189,6 +199,77 @@ func (e *Enforcer) restoreDeployment(ctx context.Context, namespace, name string
 	dep.Spec.Replicas = &original
 	delete(dep.Annotations, AnnotationOriginalReplicas)
 	return e.Client.Update(ctx, &dep)
+}
+
+// enforceReplicaSets scales standalone GPU-requesting ReplicaSets (i.e. ones
+// with no owner reference - not the child ReplicaSet of a Deployment) to
+// zero replicas. ReplicaSets owned by a Deployment are skipped: the
+// Deployment's own enforcement is the correct action there, and scaling the
+// child ReplicaSet directly would just be overwritten by the Deployment
+// controller reconciling it back to the Deployment's desired replica count.
+func (e *Enforcer) enforceReplicaSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+	var list appsv1.ReplicaSetList
+	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing replicasets in %s: %w", namespace, err)
+	}
+
+	var enforced []gpuquotav1alpha1.EnforcedResource
+	for i := range list.Items {
+		rs := &list.Items[i]
+		if len(rs.OwnerReferences) > 0 {
+			continue
+		}
+		if rs.Spec.Replicas != nil && *rs.Spec.Replicas == 0 {
+			continue
+		}
+		if !podTemplateRequestsGPU(rs.Spec.Template.Spec) {
+			continue
+		}
+
+		original := int32(1)
+		if rs.Spec.Replicas != nil {
+			original = *rs.Spec.Replicas
+		}
+		if rs.Annotations == nil {
+			rs.Annotations = map[string]string{}
+		}
+		rs.Annotations[AnnotationOriginalReplicas] = fmt.Sprintf("%d", original)
+		zero := int32(0)
+		rs.Spec.Replicas = &zero
+
+		if err := e.Client.Update(ctx, rs); err != nil {
+			return enforced, fmt.Errorf("scaling replicaset %s/%s to zero: %w", namespace, rs.Name, err)
+		}
+		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+			APIVersion: "apps/v1",
+			Kind:       "ReplicaSet",
+			Name:       rs.Name,
+			Action:     ActionScaledToZero,
+			EnforcedAt: metav1.Now(),
+		})
+	}
+	return enforced, nil
+}
+
+func (e *Enforcer) restoreReplicaSet(ctx context.Context, namespace, name string) error {
+	var rs appsv1.ReplicaSet
+	if err := e.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &rs); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	raw, ok := rs.Annotations[AnnotationOriginalReplicas]
+	if !ok {
+		return nil
+	}
+	var original int32
+	if _, err := fmt.Sscanf(raw, "%d", &original); err != nil {
+		return fmt.Errorf("parsing original replica annotation %q: %w", raw, err)
+	}
+	rs.Spec.Replicas = &original
+	delete(rs.Annotations, AnnotationOriginalReplicas)
+	return e.Client.Update(ctx, &rs)
 }
 
 func (e *Enforcer) enforceJobSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {

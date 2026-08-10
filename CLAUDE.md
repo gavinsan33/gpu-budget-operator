@@ -62,13 +62,21 @@ memory instead of utilization.
 
 ### Enforcement and restore (`enforce/enforce.go`)
 
-Four workload kinds, four different "scale to zero" primitives, because
-none of them share a common scaling API:
+Five workload kinds, four distinct "scale to zero" primitives (ReplicaSet
+reuses Deployment's), because none of them share a common scaling API:
 
 - **Deployment** (typed `appsv1`, vendored): `spec.replicas` set to 0.
   Original value saved in annotation `gpuquota.example.com/original-replicas`
   before zeroing, since a Deployment default-scaled at creation time to
   something other than 1 needs to restore to that value, not to 1.
+- **ReplicaSet** (typed `appsv1`, vendored), but only ones with **no
+  `ownerReferences`**: same `spec.replicas` / same annotation as Deployment.
+  A Deployment-owned ReplicaSet is deliberately skipped here - scaling it
+  directly would just get overwritten the next time the Deployment
+  controller reconciles it back to the Deployment's desired replica count,
+  so the Deployment itself is the correct (and only) thing to act on for
+  that case. Only a *standalone* ReplicaSet (created directly, not as a
+  Deployment's child) needs this separate code path.
 - **JobSet** (`jobset.x-k8s.io/v1alpha2`, **not vendored** — accessed via
   `unstructured.Unstructured` like Kubeflow Notebooks in prior operators in
   this environment): `spec.suspend` set to `true`. JobSet natively supports
@@ -91,14 +99,19 @@ none of them share a common scaling API:
   available - and it's the one enforcement action in this operator that is
   NOT reversible. `RestoreNamespace` explicitly no-ops on `Kind: "Pod"`
   entries rather than attempting anything, since there's nothing to restore.
-  Pods *with* an owner (a Deployment's ReplicaSet, a JobSet's Job, a KServe
-  component's ReplicaSet, or anything else) are deliberately left alone here:
-  either the owner is one of the three kinds above and its own enforcement
-  path is the correct action, or the owner is a kind this operator doesn't
-  manage, in which case deleting the Pod would just cause its controller to
-  immediately recreate it - pure churn with no effect on GPU usage.
+  Pods *with* an owner (a ReplicaSet, a JobSet's Job, a KServe component's
+  ReplicaSet, or anything else) are deliberately left alone here: either the
+  owner is one of the kinds above and its own enforcement path is the
+  correct action, or the owner is a kind this operator doesn't manage, in
+  which case deleting the Pod would just cause its controller to immediately
+  recreate it - pure churn with no effect on GPU usage.
 
-All four enforcement paths only touch workloads that actually request
+The same "only act on the unowned/top-level resource" rule applies twice in
+this list (ReplicaSet vs. Deployment, Pod vs. everything) precisely so that
+enforcement composes correctly through ownership chains instead of every
+level of a chain independently thrashing the same workload.
+
+All five enforcement paths only touch workloads that actually request
 `nvidia.com/gpu` (`podTemplateRequestsGPU` for Deployments; a generic
 recursive `scanForGPURequest` walk for the unstructured JobSet/InferenceService
 trees, since GPU requests live at different nesting depths across API
