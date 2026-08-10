@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,9 @@ func newScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	if err := gpuquotav1alpha1.AddToScheme(scheme); err != nil {
@@ -263,6 +267,62 @@ func gpuReplicaSet(namespace, name string, replicas int32, owned bool) *appsv1.R
 	return rs
 }
 
+func gpuStatefulSet(namespace, name string, replicas int32) *appsv1.StatefulSet {
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: name,
+			Selector:    &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "main",
+						Image: "example.com/model:latest",
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+}
+
+func gpuJob(namespace, name string, owned bool) *batchv1.Job {
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{{
+						Name:  "main",
+						Image: "example.com/train:latest",
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+	if owned {
+		job.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "batch/v1",
+			Kind:       "CronJob",
+			Name:       "some-cronjob",
+			UID:        "some-uid",
+		}}
+	}
+	return job
+}
+
 func gpuPod(namespace, name string, owned bool) *corev1.Pod {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -377,6 +437,83 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	}
 	if *gotOwned.Spec.Replicas != 3 {
 		t.Fatalf("expected deployment-owned replicaset untouched, got %d replicas", *gotOwned.Spec.Replicas)
+	}
+}
+
+func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
+	prom := promStub(t, 10)
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	sts := gpuStatefulSet("team-a", "training", 3)
+	past := metav1.NewTime(time.Now().Add(-time.Hour))
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			GPULimit:      4,
+			PrometheusURL: prom.URL,
+			GracePeriod:   metav1.Duration{Duration: time.Minute},
+			AutoRestore:   true,
+		},
+		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got appsv1.StatefulSet
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(sts), &got); err != nil {
+		t.Fatal(err)
+	}
+	if *got.Spec.Replicas != 0 {
+		t.Fatalf("expected statefulset scaled to 0, got %d replicas", *got.Spec.Replicas)
+	}
+	if got.Annotations["gpuquota.example.com/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", got.Annotations["gpuquota.example.com/original-replicas"])
+	}
+}
+
+func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
+	prom := promStub(t, 10)
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	standaloneJob := gpuJob("team-a", "standalone-job", false)
+	ownedJob := gpuJob("team-a", "owned-job", true)
+	past := metav1.NewTime(time.Now().Add(-time.Hour))
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			GPULimit:      4,
+			PrometheusURL: prom.URL,
+			GracePeriod:   metav1.Duration{Duration: time.Minute},
+		},
+		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneJob, ownedJob, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var gotStandalone batchv1.Job
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(standaloneJob), &gotStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if gotStandalone.Spec.Suspend == nil || !*gotStandalone.Spec.Suspend {
+		t.Fatalf("expected standalone job suspended, got %+v", gotStandalone.Spec.Suspend)
+	}
+
+	var gotOwned batchv1.Job
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ownedJob), &gotOwned); err != nil {
+		t.Fatal(err)
+	}
+	if gotOwned.Spec.Suspend != nil && *gotOwned.Spec.Suspend {
+		t.Fatalf("expected cronjob-owned job untouched, got suspend=%v", *gotOwned.Spec.Suspend)
 	}
 }
 

@@ -62,13 +62,18 @@ memory instead of utilization.
 
 ### Enforcement and restore (`enforce/enforce.go`)
 
-Five workload kinds, four distinct "scale to zero" primitives (ReplicaSet
-reuses Deployment's), because none of them share a common scaling API:
+Seven workload kinds, four distinct "scale to zero" primitives (ReplicaSet
+and StatefulSet reuse Deployment's; standalone Job reuses JobSet's), because
+none of them share a common scaling API:
 
 - **Deployment** (typed `appsv1`, vendored): `spec.replicas` set to 0.
   Original value saved in annotation `gpuquota.example.com/original-replicas`
   before zeroing, since a Deployment default-scaled at creation time to
   something other than 1 needs to restore to that value, not to 1.
+- **StatefulSet** (typed `appsv1`, vendored): identical mechanism to
+  Deployment (`spec.replicas` / same annotation). No owner-reference check
+  is needed here, unlike ReplicaSet/Job below - there's no vanilla
+  higher-level controller that owns a StatefulSet.
 - **ReplicaSet** (typed `appsv1`, vendored), but only ones with **no
   `ownerReferences`**: same `spec.replicas` / same annotation as Deployment.
   A Deployment-owned ReplicaSet is deliberately skipped here - scaling it
@@ -93,6 +98,13 @@ reuses Deployment's), because none of them share a common scaling API:
   `minReplicas` and `maxReplicas` (not just `minReplicas`) matters because
   some KServe autoscalers will scale back up from an idle 0-replica state if
   only the minimum is floored while max stays positive.
+- **Job** (typed `batchv1`, vendored), but only ones with **no
+  `ownerReferences`**: same `spec.suspend` mechanism as JobSet, reusing the
+  `gpuquota.example.com/original-suspend` annotation. A JobSet's or
+  CronJob's child Job is skipped - suspending the JobSet already covers its
+  Jobs, and a CronJob's Job is a single scheduled run that isn't yet handled
+  (see "Known gaps" below). Only a *standalone* Job (created directly, e.g.
+  via `kubectl create job` or a one-off training script) needs this path.
 - **Pod** (typed `corev1`, vendored), but only Pods with **no
   `ownerReferences` at all**: deleted outright via `client.Delete`. A bare
   Pod has no scale-to-zero or suspend field, so deletion is the only lever
@@ -111,7 +123,7 @@ this list (ReplicaSet vs. Deployment, Pod vs. everything) precisely so that
 enforcement composes correctly through ownership chains instead of every
 level of a chain independently thrashing the same workload.
 
-All five enforcement paths only touch workloads that actually request
+All seven enforcement paths only touch workloads that actually request
 `nvidia.com/gpu` (`podTemplateRequestsGPU` for Deployments; a generic
 recursive `scanForGPURequest` walk for the unstructured JobSet/InferenceService
 trees, since GPU requests live at different nesting depths across API
@@ -156,6 +168,28 @@ no such fallback since `apps/v1` is always present.
   matches the convention used elsewhere in this environment).
 - `config/crd/` — generated CRD manifest only.
 - `samples/` — example `GpuQuota` CRs.
+
+## Known gaps (not yet implemented)
+
+- **CronJob**: nothing currently suspends a CronJob's *future* scheduled
+  runs. Enforcement can suspend/leave alone an already-running child Job,
+  but the next scheduled tick will spin up a new one regardless. Would need
+  `spec.suspend` on the CronJob itself, mirroring the Job/JobSet mechanism.
+- **Kubeflow Training Operator CRDs** (`PyTorchJob`, `TFJob`, `MPIJob`, etc.,
+  group `kubeflow.org`): not enforced. Each has a `spec.runPolicy.suspend`
+  field, so they'd fit the same unstructured-suspend pattern as JobSet.
+- **DaemonSet**: intentionally never enforced. DaemonSets have no replica
+  concept and are almost always infra (the NVIDIA device plugin,
+  `dcgm-exporter` itself) - scaling/deleting one would break GPU visibility
+  or scheduling cluster-wide rather than free up quota.
+- **Blocking new workloads while `Enforced`**: enforcement is purely
+  reactive. Nothing stops a namespace from immediately recreating a new bare
+  Pod/Job the instant an old one is acted on, which would just cause
+  enforce/recreate churn every reconcile. Closing this needs a
+  `ValidatingAdmissionPolicy` or admission webhook rejecting new
+  GPU-requesting objects while `status.phase == Enforced`, which is a
+  materially bigger change (webhook infra, cert management) than adding
+  another workload kind.
 
 ## Prerequisites
 

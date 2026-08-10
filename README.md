@@ -94,11 +94,12 @@ override.
 2. Each reconcile, the operator queries Prometheus for the number of GPUs
    currently reporting non-zero utilization in that namespace.
 3. If usage stays over `spec.gpuLimit` for longer than `spec.gracePeriod`,
-   the operator enforces the quota: Deployments (and standalone ReplicaSets
-   not owned by a Deployment) requesting `nvidia.com/gpu` are scaled to 0
-   replicas, JobSets are suspended (`spec.suspend: true`), InferenceServices
-   have `minReplicas`/`maxReplicas` zeroed on every component
-   (predictor/transformer/explainer), and standalone GPU Pods with no owner
+   the operator enforces the quota: Deployments, StatefulSets, and standalone
+   ReplicaSets (not owned by a Deployment) requesting `nvidia.com/gpu` are
+   scaled to 0 replicas; JobSets and standalone Jobs (not owned by a JobSet
+   or CronJob) are suspended (`spec.suspend: true`); InferenceServices have
+   `minReplicas`/`maxReplicas` zeroed on every component
+   (predictor/transformer/explainer); and standalone GPU Pods with no owner
    reference are deleted outright (they have no scale/suspend primitive).
    Original values are recorded in annotations so everything except deleted
    Pods can be restored.
@@ -116,21 +117,24 @@ operator uses a different mechanism per kind rather than one generic action:
 | Workload kind | "Kill" mechanism | Reversible? | Restore annotation |
 |---|---|---|---|
 | `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
+| `StatefulSet` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
 | Standalone `ReplicaSet` (`apps/v1`, no owner reference) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
-| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume, same as `batch/v1.Job` | `gpuquota.example.com/original-suspend` |
+| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.example.com/original-suspend` |
+| Standalone `Job` (`batch/v1`, no owner reference) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.example.com/original-suspend` |
 | `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpuquota.example.com/original-replica-spec` |
 | Standalone `Pod` (`v1`, no owner reference) | Deleted | **No** — a bare Pod has no scale/suspend primitive, so this is a hard delete | none (nothing to restore) |
 
 Only workloads that actually request `nvidia.com/gpu` (in any container, at
 any nesting depth) are touched — non-GPU workloads in an over-quota namespace
-are left running. "Owned" resources are always deferred to their owner:
-ReplicaSets owned by a Deployment, and Pods owned by anything (a ReplicaSet,
-a JobSet's Job, a KServe component, etc.), are left alone — only the owning
-resource is enforced, since acting on the child directly would either be
-redundant or get immediately undone/recreated by its controller. Only truly
-standalone ReplicaSets/Pods (no `ownerReferences` at all — e.g. created via
-`kubectl create replicaset`/`kubectl run` or a bare manifest) are acted on
-directly, because that's the only case where nothing else is enforcing them.
+are left running. "Owned" resources are always deferred to their owner: ReplicaSets owned by a
+Deployment, Jobs owned by a JobSet or CronJob, and Pods owned by anything (a
+ReplicaSet, a Job, a KServe component, etc.), are left alone — only the
+owning resource is enforced, since acting on the child directly would either
+be redundant or get immediately undone/recreated by its controller. Only
+truly standalone ReplicaSets/Jobs/Pods (no `ownerReferences` at all — e.g.
+created via `kubectl create replicaset`/`kubectl create job`/`kubectl run`
+or a bare manifest) are acted on directly, because that's the only case
+where nothing else is enforcing them.
 Every action above is undone automatically once the namespace's usage drops
 back under `gpuLimit`, unless `spec.autoRestore: false` — Pod deletion is the
 one exception, since a deleted Pod can't be un-deleted. See `CLAUDE.md` for

@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -25,16 +26,17 @@ const (
 	// GPUResourceName is the extended resource requested by GPU workloads.
 	GPUResourceName = corev1.ResourceName("nvidia.com/gpu")
 
-	// AnnotationOriginalReplicas remembers a Deployment's or standalone
-	// ReplicaSet's replica count before it was scaled to zero, so it can be
-	// restored later.
+	// AnnotationOriginalReplicas remembers a Deployment's, StatefulSet's, or
+	// standalone ReplicaSet's replica count before it was scaled to zero, so
+	// it can be restored later.
 	AnnotationOriginalReplicas = "gpuquota.example.com/original-replicas"
 
 	// AnnotationOriginalReplicaSpec remembers an InferenceService component's
 	// original min/max replicas as JSON before it was zeroed out.
 	AnnotationOriginalReplicaSpec = "gpuquota.example.com/original-replica-spec"
 
-	// AnnotationOriginalSuspend remembers a JobSet's original suspend value.
+	// AnnotationOriginalSuspend remembers a JobSet's or standalone Job's
+	// original suspend value.
 	AnnotationOriginalSuspend = "gpuquota.example.com/original-suspend"
 
 	ActionScaledToZero = "ScaledToZero"
@@ -68,12 +70,13 @@ type Enforcer struct {
 	Client client.Client
 }
 
-// EnforceNamespace scales every GPU-requesting Deployment (and every
-// standalone GPU-requesting ReplicaSet not owned by a Deployment) to zero
-// replicas, suspends every GPU-requesting JobSet, zeroes the replica bounds
-// of every GPU-requesting InferenceService, and deletes standalone GPU Pods
-// (ones with no controlling owner, since a bare Pod can't be scaled or
-// suspended) in the namespace. It returns the set of resources it acted on.
+// EnforceNamespace scales every GPU-requesting Deployment, StatefulSet, and
+// standalone ReplicaSet (not owned by a Deployment) to zero replicas,
+// suspends every GPU-requesting JobSet and standalone Job (not owned by a
+// JobSet or CronJob), zeroes the replica bounds of every GPU-requesting
+// InferenceService, and deletes standalone GPU Pods (ones with no
+// controlling owner, since a bare Pod can't be scaled or suspended) in the
+// namespace. It returns the set of resources it acted on.
 func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
 	var enforced []gpuquotav1alpha1.EnforcedResource
 
@@ -82,6 +85,12 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 		return enforced, err
 	}
 	enforced = append(enforced, deployments...)
+
+	statefulSets, err := e.enforceStatefulSets(ctx, namespace)
+	if err != nil {
+		return enforced, err
+	}
+	enforced = append(enforced, statefulSets...)
 
 	replicaSets, err := e.enforceReplicaSets(ctx, namespace)
 	if err != nil {
@@ -94,6 +103,12 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 		return enforced, err
 	}
 	enforced = append(enforced, jobSets...)
+
+	jobs, err := e.enforceJobs(ctx, namespace)
+	if err != nil {
+		return enforced, err
+	}
+	enforced = append(enforced, jobs...)
 
 	inferenceServices, err := e.enforceInferenceServices(ctx, namespace)
 	if err != nil {
@@ -123,8 +138,12 @@ func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enfor
 			err = e.restoreDeployment(ctx, namespace, res.Name)
 		case "ReplicaSet":
 			err = e.restoreReplicaSet(ctx, namespace, res.Name)
+		case "StatefulSet":
+			err = e.restoreStatefulSet(ctx, namespace, res.Name)
 		case "JobSet":
 			err = e.restoreJobSet(ctx, namespace, res.Name)
+		case "Job":
+			err = e.restoreJob(ctx, namespace, res.Name)
 		case "InferenceService":
 			err = e.restoreInferenceService(ctx, namespace, res.Name)
 		case "Pod":
@@ -207,6 +226,72 @@ func (e *Enforcer) restoreDeployment(ctx context.Context, namespace, name string
 // Deployment's own enforcement is the correct action there, and scaling the
 // child ReplicaSet directly would just be overwritten by the Deployment
 // controller reconciling it back to the Deployment's desired replica count.
+// enforceStatefulSets scales GPU-requesting StatefulSets to zero replicas,
+// mirroring enforceDeployments. Unlike ReplicaSet there's no vanilla
+// higher-level controller that owns a StatefulSet, so (unlike ReplicaSets)
+// no owner-reference check is needed here.
+func (e *Enforcer) enforceStatefulSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+	var list appsv1.StatefulSetList
+	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing statefulsets in %s: %w", namespace, err)
+	}
+
+	var enforced []gpuquotav1alpha1.EnforcedResource
+	for i := range list.Items {
+		sts := &list.Items[i]
+		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
+			continue
+		}
+		if !podTemplateRequestsGPU(sts.Spec.Template.Spec) {
+			continue
+		}
+
+		original := int32(1)
+		if sts.Spec.Replicas != nil {
+			original = *sts.Spec.Replicas
+		}
+		if sts.Annotations == nil {
+			sts.Annotations = map[string]string{}
+		}
+		sts.Annotations[AnnotationOriginalReplicas] = fmt.Sprintf("%d", original)
+		zero := int32(0)
+		sts.Spec.Replicas = &zero
+
+		if err := e.Client.Update(ctx, sts); err != nil {
+			return enforced, fmt.Errorf("scaling statefulset %s/%s to zero: %w", namespace, sts.Name, err)
+		}
+		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+			Name:       sts.Name,
+			Action:     ActionScaledToZero,
+			EnforcedAt: metav1.Now(),
+		})
+	}
+	return enforced, nil
+}
+
+func (e *Enforcer) restoreStatefulSet(ctx context.Context, namespace, name string) error {
+	var sts appsv1.StatefulSet
+	if err := e.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &sts); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	raw, ok := sts.Annotations[AnnotationOriginalReplicas]
+	if !ok {
+		return nil
+	}
+	var original int32
+	if _, err := fmt.Sscanf(raw, "%d", &original); err != nil {
+		return fmt.Errorf("parsing original replica annotation %q: %w", raw, err)
+	}
+	sts.Spec.Replicas = &original
+	delete(sts.Annotations, AnnotationOriginalReplicas)
+	return e.Client.Update(ctx, &sts)
+}
+
 func (e *Enforcer) enforceReplicaSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
 	var list appsv1.ReplicaSetList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
@@ -338,6 +423,70 @@ func (e *Enforcer) restoreJobSet(ctx context.Context, namespace, name string) er
 	delete(annotations, AnnotationOriginalSuspend)
 	obj.SetAnnotations(annotations)
 	return e.Client.Update(ctx, obj)
+}
+
+// enforceJobs suspends standalone GPU-requesting Jobs (i.e. ones with no
+// owner reference - not a Job created by a JobSet or a CronJob) via the
+// native batch/v1 spec.suspend field. Owned Jobs are skipped: a JobSet's
+// child Job is already covered by suspending the JobSet, and a CronJob's
+// child Job is a single run that should complete or be handled by
+// suspending the CronJob (a future enhancement) rather than fought here.
+func (e *Enforcer) enforceJobs(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+	var list batchv1.JobList
+	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing jobs in %s: %w", namespace, err)
+	}
+
+	var enforced []gpuquotav1alpha1.EnforcedResource
+	for i := range list.Items {
+		job := &list.Items[i]
+		if len(job.OwnerReferences) > 0 {
+			continue
+		}
+		if job.Spec.Suspend != nil && *job.Spec.Suspend {
+			continue
+		}
+		if !podTemplateRequestsGPU(job.Spec.Template.Spec) {
+			continue
+		}
+
+		if job.Annotations == nil {
+			job.Annotations = map[string]string{}
+		}
+		job.Annotations[AnnotationOriginalSuspend] = "false"
+		suspend := true
+		job.Spec.Suspend = &suspend
+
+		if err := e.Client.Update(ctx, job); err != nil {
+			return enforced, fmt.Errorf("suspending job %s/%s: %w", namespace, job.Name, err)
+		}
+		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+			APIVersion: "batch/v1",
+			Kind:       "Job",
+			Name:       job.Name,
+			Action:     ActionSuspended,
+			EnforcedAt: metav1.Now(),
+		})
+	}
+	return enforced, nil
+}
+
+func (e *Enforcer) restoreJob(ctx context.Context, namespace, name string) error {
+	var job batchv1.Job
+	if err := e.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &job); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	raw, ok := job.Annotations[AnnotationOriginalSuspend]
+	if !ok {
+		return nil
+	}
+	original := raw == "true"
+	job.Spec.Suspend = &original
+	delete(job.Annotations, AnnotationOriginalSuspend)
+	return e.Client.Update(ctx, &job)
 }
 
 func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {

@@ -50,9 +50,29 @@ rules:
   - update
   - patch
 - apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
   - jobset.x-k8s.io
   resources:
   - jobsets
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
   verbs:
   - get
   - list
