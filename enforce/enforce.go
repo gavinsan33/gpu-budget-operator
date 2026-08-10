@@ -68,9 +68,10 @@ type Enforcer struct {
 }
 
 // EnforceNamespace scales every GPU-requesting Deployment to zero replicas,
-// suspends every GPU-requesting JobSet, and zeroes the replica bounds of
-// every GPU-requesting InferenceService in the namespace. It returns the set
-// of resources it acted on.
+// suspends every GPU-requesting JobSet, zeroes the replica bounds of every
+// GPU-requesting InferenceService, and deletes standalone GPU Pods (ones with
+// no controlling owner, since a bare Pod can't be scaled or suspended) in the
+// namespace. It returns the set of resources it acted on.
 func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
 	var enforced []gpuquotav1alpha1.EnforcedResource
 
@@ -92,12 +93,20 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 	}
 	enforced = append(enforced, inferenceServices...)
 
+	pods, err := e.enforcePods(ctx, namespace)
+	if err != nil {
+		return enforced, err
+	}
+	enforced = append(enforced, pods...)
+
 	return enforced, nil
 }
 
 // RestoreNamespace reverses enforcement for every resource previously
 // recorded in enforcedResources, restoring original replica counts / suspend
-// state. Resources that no longer exist are skipped.
+// state. Resources that no longer exist are skipped. Deleted Pods have no
+// restore action - deletion isn't reversible, so a "Pod"/Deleted entry is
+// left in status purely as a historical record of what enforcement did.
 func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enforcedResources []gpuquotav1alpha1.EnforcedResource) error {
 	for _, res := range enforcedResources {
 		var err error
@@ -108,6 +117,8 @@ func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enfor
 			err = e.restoreJobSet(ctx, namespace, res.Name)
 		case "InferenceService":
 			err = e.restoreInferenceService(ctx, namespace, res.Name)
+		case "Pod":
+			continue
 		default:
 			continue
 		}
@@ -350,6 +361,53 @@ func (e *Enforcer) restoreInferenceService(ctx context.Context, namespace, name 
 	delete(annotations, AnnotationOriginalReplicaSpec)
 	obj.SetAnnotations(annotations)
 	return e.Client.Update(ctx, obj)
+}
+
+// enforcePods deletes standalone GPU Pods in the namespace: Pods with no
+// controller owner reference at all (e.g. created directly via `kubectl run`
+// or a bare manifest, not by a Deployment/JobSet/InferenceService/anything
+// else). Pods owned by something are left alone here - either their owner is
+// one of the kinds already handled above (in which case scaling/suspending
+// the owner is the correct action, and the owner's controller will delete or
+// recreate the Pod on its own schedule), or it's an owner kind this operator
+// doesn't manage, in which case deleting the Pod out from under its
+// controller would just cause an immediate, pointless recreation. Deletion
+// is the only "scale to zero" primitive available for a bare Pod, and it is
+// NOT reversible - restoring a deleted Pod is not attempted.
+func (e *Enforcer) enforcePods(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+	var list corev1.PodList
+	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing pods in %s: %w", namespace, err)
+	}
+
+	var enforced []gpuquotav1alpha1.EnforcedResource
+	for i := range list.Items {
+		pod := &list.Items[i]
+		if len(pod.OwnerReferences) > 0 {
+			continue
+		}
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if !podTemplateRequestsGPU(pod.Spec) {
+			continue
+		}
+
+		if err := e.Client.Delete(ctx, pod); err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return enforced, fmt.Errorf("deleting pod %s/%s: %w", namespace, pod.Name, err)
+		}
+		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Name:       pod.Name,
+			Action:     ActionDeleted,
+			EnforcedAt: metav1.Now(),
+		})
+	}
+	return enforced, nil
 }
 
 func readReplicaSpec(spec map[string]interface{}) componentReplicaSpec {

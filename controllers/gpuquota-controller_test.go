@@ -230,6 +230,79 @@ func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T
 	}
 }
 
+func gpuPod(namespace, name string, owned bool) *corev1.Pod {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  "main",
+				Image: "example.com/model:latest",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+					},
+				},
+			}},
+		},
+	}
+	if owned {
+		pod.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "apps/v1",
+			Kind:       "ReplicaSet",
+			Name:       "some-replicaset",
+			UID:        "some-uid",
+		}}
+	}
+	return pod
+}
+
+func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
+	prom := promStub(t, 10)
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	barePod := gpuPod("team-a", "bare-gpu-pod", false)
+	ownedPod := gpuPod("team-a", "owned-gpu-pod", true)
+	past := metav1.NewTime(time.Now().Add(-time.Hour))
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			GPULimit:      4,
+			PrometheusURL: prom.URL,
+			GracePeriod:   metav1.Duration{Duration: time.Minute},
+		},
+		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(barePod, ownedPod, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var pods corev1.PodList
+	if err := c.List(context.Background(), &pods, client.InNamespace("team-a")); err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Name != "owned-gpu-pod" {
+		t.Fatalf("expected only the owned pod to survive, got %+v", pods.Items)
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, res := range got.Status.EnforcedResources {
+		if res.Kind == "Pod" && res.Name == "bare-gpu-pod" && res.Action == "Deleted" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected EnforcedResources to record bare-gpu-pod deletion, got %+v", got.Status.EnforcedResources)
+	}
+}
+
 func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	prom := promStub(t, 10)
 	defer prom.Close()

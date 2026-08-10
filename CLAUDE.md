@@ -62,7 +62,7 @@ memory instead of utilization.
 
 ### Enforcement and restore (`enforce/enforce.go`)
 
-Three workload kinds, three different "scale to zero" primitives, because
+Four workload kinds, four different "scale to zero" primitives, because
 none of them share a common scaling API:
 
 - **Deployment** (typed `appsv1`, vendored): `spec.replicas` set to 0.
@@ -85,8 +85,20 @@ none of them share a common scaling API:
   `minReplicas` and `maxReplicas` (not just `minReplicas`) matters because
   some KServe autoscalers will scale back up from an idle 0-replica state if
   only the minimum is floored while max stays positive.
+- **Pod** (typed `corev1`, vendored), but only Pods with **no
+  `ownerReferences` at all**: deleted outright via `client.Delete`. A bare
+  Pod has no scale-to-zero or suspend field, so deletion is the only lever
+  available - and it's the one enforcement action in this operator that is
+  NOT reversible. `RestoreNamespace` explicitly no-ops on `Kind: "Pod"`
+  entries rather than attempting anything, since there's nothing to restore.
+  Pods *with* an owner (a Deployment's ReplicaSet, a JobSet's Job, a KServe
+  component's ReplicaSet, or anything else) are deliberately left alone here:
+  either the owner is one of the three kinds above and its own enforcement
+  path is the correct action, or the owner is a kind this operator doesn't
+  manage, in which case deleting the Pod would just cause its controller to
+  immediately recreate it - pure churn with no effect on GPU usage.
 
-All three enforcement paths only touch workloads that actually request
+All four enforcement paths only touch workloads that actually request
 `nvidia.com/gpu` (`podTemplateRequestsGPU` for Deployments; a generic
 recursive `scanForGPURequest` walk for the unstructured JobSet/InferenceService
 trees, since GPU requests live at different nesting depths across API
