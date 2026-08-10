@@ -78,9 +78,9 @@ func TestReconcile_CompliantUsageDoesNotEnforce(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	dep := gpuDeployment("team-a", "model", 3)
+	dep := gpuDeployment("gavin-test", "model", 3)
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec:       gpuquotav1alpha1.GpuQuotaSpec{GPULimit: 4, PrometheusURL: prom.URL},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
@@ -116,9 +116,9 @@ func TestReconcile_ViolationWaitsOutGracePeriodBeforeEnforcing(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	dep := gpuDeployment("team-a", "model", 3)
+	dep := gpuDeployment("gavin-test", "model", 3)
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -155,10 +155,10 @@ func TestReconcile_ViolationWaitsOutGracePeriodBeforeEnforcing(t *testing.T) {
 func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T) {
 	prom := promStub(t, 10)
 	scheme := newScheme(t)
-	dep := gpuDeployment("team-a", "model", 3)
+	dep := gpuDeployment("gavin-test", "model", 3)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -354,11 +354,11 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	barePod := gpuPod("team-a", "bare-gpu-pod", false)
-	ownedPod := gpuPod("team-a", "owned-gpu-pod", true)
+	barePod := gpuPod("gavin-test", "bare-gpu-pod", false)
+	ownedPod := gpuPod("gavin-test", "owned-gpu-pod", true)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -374,7 +374,7 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	}
 
 	var pods corev1.PodList
-	if err := c.List(context.Background(), &pods, client.InNamespace("team-a")); err != nil {
+	if err := c.List(context.Background(), &pods, client.InNamespace("gavin-test")); err != nil {
 		t.Fatal(err)
 	}
 	if len(pods.Items) != 1 || pods.Items[0].Name != "owned-gpu-pod" {
@@ -401,11 +401,11 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	standaloneRS := gpuReplicaSet("team-a", "standalone-rs", 3, false)
-	ownedRS := gpuReplicaSet("team-a", "owned-rs", 3, true)
+	standaloneRS := gpuReplicaSet("gavin-test", "standalone-rs", 3, false)
+	ownedRS := gpuReplicaSet("gavin-test", "owned-rs", 3, true)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -445,10 +445,10 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	sts := gpuStatefulSet("team-a", "training", 3)
+	sts := gpuStatefulSet("gavin-test", "training", 3)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -481,11 +481,11 @@ func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	standaloneJob := gpuJob("team-a", "standalone-job", false)
-	ownedJob := gpuJob("team-a", "owned-job", true)
+	standaloneJob := gpuJob("gavin-test", "standalone-job", false)
+	ownedJob := gpuJob("gavin-test", "owned-job", true)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,
@@ -522,11 +522,11 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	dep := gpuDeployment("team-a", "plain", 3)
+	dep := gpuDeployment("gavin-test", "plain", 3)
 	dep.Spec.Template.Spec.Containers[0].Resources.Requests = nil // strip the GPU request
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
 			GPULimit:      4,
 			PrometheusURL: prom.URL,

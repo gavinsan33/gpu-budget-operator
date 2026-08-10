@@ -50,8 +50,8 @@ independently against the same namespace's workloads.
 apiVersion: gpuquota.example.com/v1alpha1
 kind: GpuQuota
 metadata:
-  name: team-a-quota
-  namespace: team-a
+  name: gavin-test-quota
+  namespace: gavin-test
 spec:
   gpuLimit: 4          # at most 4 GPUs active at once in this namespace
   checkInterval: 1m    # re-check usage every minute while compliant
@@ -158,7 +158,7 @@ details.
 5. `make install` — install the `GpuQuota` CRD.
 6. `make deploy IMG=<your image>` — deploy the operator.
 7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
-   `kubectl apply -f samples/team-a-quota.yaml`.
+   `kubectl apply -f samples/gavin-test-quota.yaml`.
 
 ## Uninstall
 
