@@ -1,8 +1,8 @@
 apiVersion: gpuquota.example.com/v1alpha1
 kind: GpuQuota
 metadata:
-  name: team-a-quota
-  namespace: team-a
+  name: gavin-test-quota
+  namespace: gavin-test
 spec:
   gpuLimit: 4
   checkInterval: 1m
