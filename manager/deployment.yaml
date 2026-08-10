@@ -24,9 +24,18 @@ spec:
         - /manager
         args:
         - --leader-elect
-        # Point at your in-cluster Prometheus/Thanos that scrapes dcgm-exporter.
-        # Individual GpuQuotas can override this via spec.prometheusURL.
-        - --default-prometheus-url=http://prometheus-k8s.monitoring.svc:9090
+        # OpenShift's built-in monitoring stack. Requires the
+        # cluster-monitoring-view ClusterRoleBinding (monitoring_rolebinding.yaml).
+        # TLS trust is automatic: the operator always looks for a CA bundle at
+        # /etc/gpu-quota-operator/service-ca/service-ca.crt (mounted below)
+        # and falls back to the system trust store if it isn't present - no
+        # flag controls this. Individual GpuQuotas can override the URL
+        # itself via spec.prometheusURL.
+        - --default-prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
+        volumeMounts:
+        - name: service-ca
+          mountPath: /etc/gpu-quota-operator/service-ca
+          readOnly: true
         resources:
           limits:
             cpu: 500m
@@ -40,5 +49,9 @@ spec:
             drop:
             - ALL
           runAsNonRoot: true
+      volumes:
+      - name: service-ca
+        configMap:
+          name: gpu-quota-operator-service-ca
       securityContext:
         runAsNonRoot: true

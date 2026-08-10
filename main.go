@@ -27,11 +27,14 @@ func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var defaultPrometheusURL string
+	var prometheusTokenFile string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&defaultPrometheusURL, "default-prometheus-url", "",
 		"Default Prometheus base URL used for GpuQuotas that do not set spec.prometheusURL.")
+	flag.StringVar(&prometheusTokenFile, "prometheus-token-file", "/var/run/secrets/kubernetes.io/serviceaccount/token",
+		"Path to a Bearer token attached to every Prometheus request. Set to an empty string to disable auth (e.g. against a dev Prometheus).")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -53,6 +56,7 @@ func main() {
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		DefaultPrometheusURL: defaultPrometheusURL,
+		PrometheusTokenFile:  prometheusTokenFile,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GpuQuota")
 		os.Exit(1)

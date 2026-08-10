@@ -32,6 +32,13 @@ type GpuQuotaReconciler struct {
 	// spec.prometheusURL.
 	DefaultPrometheusURL string
 
+	// PrometheusTokenFile is the path to a Bearer token attached to every
+	// Prometheus request (re-read per-request, since projected ServiceAccount
+	// tokens rotate in place). Empty disables auth - fine for a dev
+	// Prometheus, but OpenShift's in-cluster Thanos Querier requires this.
+	// TLS trust is not configurable here - see metrics.NewClient.
+	PrometheusTokenFile string
+
 	// Enforcer performs the actual scale-down/suspend/restore operations.
 	// Defaults to &enforce.Enforcer{Client: r.Client} on first use if nil.
 	Enforcer *enforce.Enforcer
@@ -191,7 +198,10 @@ func (r *GpuQuotaReconciler) prometheusClientFor(address string) (*metrics.Clien
 	if c, ok := r.promClients[address]; ok {
 		return c, nil
 	}
-	c, err := metrics.NewClient(address)
+	c, err := metrics.NewClient(metrics.Config{
+		Address:   address,
+		TokenFile: r.PrometheusTokenFile,
+	})
 	if err != nil {
 		return nil, err
 	}

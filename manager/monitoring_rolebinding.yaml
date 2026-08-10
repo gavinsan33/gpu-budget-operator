@@ -1,0 +1,15 @@
+# Grants read access to OpenShift's built-in Prometheus/Thanos Querier.
+# cluster-monitoring-view is a ClusterRole shipped by OpenShift's cluster
+# monitoring operator, not something this repo defines or manages.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-quota-operator-monitoring-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+- kind: ServiceAccount
+  name: gpu-quota-operator-controller-manager
+  namespace: gpu-quota-operator-system

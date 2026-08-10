@@ -6,8 +6,9 @@ An operator that lets namespaces opt in to a GPU quota. A namespace creates a
 `GpuQuota` custom resource declaring `spec.gpuLimit` (max concurrently-active
 GPUs). The operator watches real GPU utilization for that namespace via
 Prometheus/`dcgm-exporter` and, when usage sustains above the limit, scales
-down GPU-consuming workloads (`Deployment`, `JobSet`, `InferenceService`) in
-that namespace until usage falls back under budget.
+down GPU-consuming workloads (`Deployment`, `StatefulSet`, standalone
+`ReplicaSet`, `JobSet`, standalone `Job`, `InferenceService`, and standalone
+`Pod`) in that namespace until usage falls back under budget.
 
 ## Architecture
 
@@ -30,6 +31,48 @@ Reconcile pipeline per pass:
    than polling on a single fixed interval — this is why `Reconcile` computes
    `ctrl.Result{RequeueAfter: ...}` differently in each branch instead of
    using a periodic `SetupWithManager` resync.
+
+### Authenticating to Prometheus (`metrics/prometheus.go`)
+
+The zero-value `metrics.Config` talks plain, unauthenticated HTTP - fine
+against a throwaway dev Prometheus, but OpenShift's in-cluster Thanos
+Querier/Prometheus sit behind an `oauth-proxy` requiring both a Bearer token
+and a trusted TLS certificate. Two things happen inside `metrics.NewClient`
+to handle that, wired together via a custom `http.RoundTripper`
+(`bearerTokenRoundTripper`) rather than anything built into
+`client_golang/api`, which has no auth support of its own:
+
+- **Token**: `Config.TokenFile` is read from disk **on every request**, not
+  cached at client-creation time. This matters because Kubernetes rotates
+  projected ServiceAccount tokens in place roughly hourly - caching the
+  token read at startup would work fine initially and then silently start
+  failing with 401s well into the operator's uptime, which would be a nasty
+  thing to debug in production.
+- **TLS trust**: automatic, not configurable. `buildTransport` always reads
+  the fixed path `serviceCACertFile`
+  (`/etc/gpu-quota-operator/service-ca/service-ca.crt`) and, if present,
+  parses it into an `x509.CertPool` used as `tls.Config.RootCAs` on a clone
+  of `http.DefaultTransport` (cloned, not built from scratch, to keep
+  proxy/env-var support). If the file is missing (`os.IsNotExist`), it
+  silently falls back to the system trust store rather than erroring -
+  deliberately, so the operator still works unmodified against a
+  non-OpenShift Prometheus with a public-CA or plain-HTTP endpoint. Any
+  *other* read error (permissions, corrupt PEM) does fail loudly, since that
+  indicates the mount is broken rather than absent. There is intentionally
+  no `Config` field, flag, or CR field to override the path or skip
+  verification - `serviceCACertFile` is a `var` rather than a `const` purely
+  so `metrics/prometheus_test.go` can point it at a temp file per test; it
+  is never reassigned outside tests.
+
+The RBAC binding this requires (OpenShift's built-in `cluster-monitoring-view`
+ClusterRole) and the CA bundle this needs mounted (via
+`service.beta.openshift.io/inject-cabundle: "true"` on a ConfigMap the
+service-ca operator populates) live in `manager/monitoring_rolebinding.yaml`
+and `manager/service-ca-configmap.yaml` respectively; `manager/deployment.yaml`
+mounts that ConfigMap at the exact path `serviceCACertFile` expects. None of
+this is required for a non-OpenShift Prometheus that doesn't sit behind an
+auth proxy; those two manifests plus `--prometheus-token-file` are the only
+OpenShift-specific pieces of the whole operator.
 
 ### GPU usage metric
 
@@ -124,11 +167,11 @@ enforcement composes correctly through ownership chains instead of every
 level of a chain independently thrashing the same workload.
 
 All seven enforcement paths only touch workloads that actually request
-`nvidia.com/gpu` (`podTemplateRequestsGPU` for Deployments; a generic
-recursive `scanForGPURequest` walk for the unstructured JobSet/InferenceService
-trees, since GPU requests live at different nesting depths across API
-versions/components). Non-GPU workloads in an over-quota namespace are left
-alone.
+`nvidia.com/gpu` (`podTemplateRequestsGPU` for the typed kinds - Deployment,
+StatefulSet, ReplicaSet, Job, Pod; a generic recursive `scanForGPURequest`
+walk for the unstructured JobSet/InferenceService trees, since GPU requests
+live at different nesting depths across API versions/components). Non-GPU
+workloads in an over-quota namespace are left alone.
 
 Restore is driven entirely by `status.enforcedResources` — the reconciler
 doesn't re-derive "what did I touch" by re-scanning the namespace, it replays
@@ -141,8 +184,9 @@ workload created after the initial enforcement) append rather than duplicate.
 JobSet and InferenceService are optional dependencies — if either CRD isn't
 installed in the cluster, `enforceJobSets`/`enforceInferenceServices` detect
 the `NoKindMatch`/not-found error from the list call and treat it as "nothing
-to enforce" rather than failing the whole reconcile. Deployment support has
-no such fallback since `apps/v1` is always present.
+to enforce" rather than failing the whole reconcile. None of the other five
+kinds need this fallback, since `apps/v1`/`batch/v1`/core `v1` are always
+present on any Kubernetes cluster.
 
 ## Development Commands
 

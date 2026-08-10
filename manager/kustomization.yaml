@@ -6,6 +6,8 @@ resources:
 - service_account.yaml
 - role.yaml
 - role_binding.yaml
+- monitoring_rolebinding.yaml
+- service-ca-configmap.yaml
 - deployment.yaml
 
 images:
