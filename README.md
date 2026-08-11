@@ -13,11 +13,11 @@ are suspended; InferenceServices have their replica bounds zeroed; and
 standalone GPU Pods are deleted outright. Enforcement is never lifted
 automatically — not when a new period starts, and not if usage would
 otherwise read as compliant — only a human clearing the
-`gpuquota.example.com/reset` annotation restores enforced workloads.
+`gpuquota.io/reset` annotation restores enforced workloads.
 
 ## The `GpuQuota` CRD
 
-`GpuQuota` is a **namespaced** custom resource (group `gpuquota.example.com`,
+`GpuQuota` is a **namespaced** custom resource (group `gpuquota.io`,
 version `v1alpha1`, short name `gq`). Creating one in a namespace is the
 opt-in mechanism — the operator only monitors and enforces namespaces that
 have a `GpuQuota` object; everything else is left alone. There's no
@@ -52,7 +52,7 @@ independently against the same namespace's workloads.
 ### Example
 
 ```yaml
-apiVersion: gpuquota.example.com/v1alpha1
+apiVersion: gpuquota.io/v1alpha1
 kind: GpuQuota
 metadata:
   name: gavin-test-quota
@@ -86,11 +86,11 @@ Enforcement is **never** lifted automatically — not when usage would
 otherwise read as compliant, and not when a new billing period starts
 (cumulative usage never decreases within a period, and a new period alone
 doesn't mean the underlying cost problem was addressed). The only way to
-restore enforced workloads is to set the `gpuquota.example.com/reset`
+restore enforced workloads is to set the `gpuquota.io/reset`
 annotation to `"true"` on the `GpuQuota`:
 
 ```
-oc annotate gpuquota gavin-test-quota -n gavin-test gpuquota.example.com/reset=true
+oc annotate gpuquota gavin-test-quota -n gavin-test gpuquota.io/reset=true
 ```
 
 The operator restores everything in `status.enforcedResources` to its
@@ -150,7 +150,7 @@ clean slate to try again (e.g. after raising the limit).
 4. Once enforced, the operator keeps re-applying enforcement on every
    reconcile (catching any newly created GPU workloads too) regardless of
    what usage now reads — enforcement is never lifted by usage dropping or
-   a new period starting. Only the `gpuquota.example.com/reset` annotation
+   a new period starting. Only the `gpuquota.io/reset` annotation
    restores things (see above).
 
 ### Enforcement actions by workload kind
@@ -160,12 +160,12 @@ operator uses a different mechanism per kind rather than one generic action:
 
 | Workload kind | "Kill" mechanism | Reversible? | Restore annotation |
 |---|---|---|---|
-| `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
-| `StatefulSet` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
-| Standalone `ReplicaSet` (`apps/v1`, no owner reference) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.example.com/original-replicas` |
-| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.example.com/original-suspend` |
-| Standalone `Job` (`batch/v1`, no owner reference) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.example.com/original-suspend` |
-| `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpuquota.example.com/original-replica-spec` |
+| `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
+| `StatefulSet` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
+| Standalone `ReplicaSet` (`apps/v1`, no owner reference) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
+| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.io/original-suspend` |
+| Standalone `Job` (`batch/v1`, no owner reference) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.io/original-suspend` |
+| `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpuquota.io/original-replica-spec` |
 | Standalone `Pod` (`v1`, no owner reference) | Deleted | **No** — a bare Pod has no scale/suspend primitive, so this is a hard delete | none (nothing to restore) |
 
 Only workloads that actually request `nvidia.com/gpu` (in any container, at

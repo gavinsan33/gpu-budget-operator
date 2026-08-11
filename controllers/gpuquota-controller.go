@@ -50,9 +50,9 @@ type GpuQuotaReconciler struct {
 	promClient   *metrics.Client
 }
 
-// +kubebuilder:rbac:groups=gpuquota.example.com,resources=gpuquotas,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=gpuquota.example.com,resources=gpuquotas/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=gpuquota.example.com,resources=gpuquotas/finalizers,verbs=update
+// +kubebuilder:rbac:groups=gpuquota.io,resources=gpuquotas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gpuquota.io,resources=gpuquotas/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=gpuquota.io,resources=gpuquotas/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch

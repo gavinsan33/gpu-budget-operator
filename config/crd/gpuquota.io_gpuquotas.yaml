@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: gpuquotas.gpuquota.example.com
+  name: gpuquotas.gpuquota.io
 spec:
-  group: gpuquota.example.com
+  group: gpuquota.io
   names:
     kind: GpuQuota
     listKind: GpuQuotaList

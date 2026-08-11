@@ -51,7 +51,7 @@ func main() {
 		Scheme:           scheme,
 		Metrics:          metricsserver.Options{BindAddress: metricsAddr},
 		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "gpu-quota-operator.gpuquota.example.com",
+		LeaderElectionID: "gpu-quota-operator.gpuquota.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

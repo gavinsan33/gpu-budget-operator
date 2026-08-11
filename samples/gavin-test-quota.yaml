@@ -1,4 +1,4 @@
-apiVersion: gpuquota.example.com/v1alpha1
+apiVersion: gpuquota.io/v1alpha1
 kind: GpuQuota
 metadata:
   name: gavin-test-quota

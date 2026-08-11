@@ -11,7 +11,7 @@ started via Prometheus and, once either budget is exceeded, scales down
 GPU-consuming workloads (`Deployment`, `StatefulSet`, standalone
 `ReplicaSet`, `JobSet`, standalone `Job`, `InferenceService`, and standalone
 `Pod`) in that namespace. Enforcement is **never lifted automatically** -
-only a human clearing the `gpuquota.example.com/reset` annotation restores
+only a human clearing the `gpuquota.io/reset` annotation restores
 enforced workloads (see below).
 
 ## Architecture
@@ -22,7 +22,7 @@ There is no cross-namespace state — each `GpuQuota` is fully independent, so
 multiple teams' quotas can't interfere with each other.
 
 Reconcile pipeline per pass:
-1. If `gpuquota.example.com/reset` is set to `"true"`, restore any workloads
+1. If `gpuquota.io/reset` is set to `"true"`, restore any workloads
    in `status.enforcedResources`, clear enforcement state, and remove the
    annotation (`handleManualReset`) - before anything else, so a reset takes
    effect even if usage is still over budget (in which case the same pass
@@ -69,7 +69,7 @@ choice (confirmed with the user), not an oversight:
   addressed - it just means the counter reset. Auto-restoring on period
   rollover would silently let a namespace that blew its budget every single
   month keep doing so forever with no human ever noticing.
-- So the only trigger is explicit: `gpuquota.example.com/reset=true`. This
+- So the only trigger is explicit: `gpuquota.io/reset=true`. This
   also means an admin can use it as an "unlock and see what happens" tool
   after raising a limit - if usage is still over budget post-restore, the
   reconciler re-enforces in the same pass (see pipeline step 1 above),
@@ -162,7 +162,7 @@ and StatefulSet reuse Deployment's; standalone Job reuses JobSet's), because
 none of them share a common scaling API:
 
 - **Deployment** (typed `appsv1`, vendored): `spec.replicas` set to 0.
-  Original value saved in annotation `gpuquota.example.com/original-replicas`
+  Original value saved in annotation `gpuquota.io/original-replicas`
   before zeroing, since a Deployment default-scaled at creation time to
   something other than 1 needs to restore to that value, not to 1.
 - **StatefulSet** (typed `appsv1`, vendored): identical mechanism to
@@ -187,7 +187,7 @@ none of them share a common scaling API:
   unstructured): `minReplicas`/`maxReplicas` set to `0` on every component
   present (`predictor`, `transformer`, `explainer`). Original per-component
   values are marshaled to JSON and stored in annotation
-  `gpuquota.example.com/original-replica-spec` — a `nil` original value
+  `gpuquota.io/original-replica-spec` — a `nil` original value
   means the field was unset (not "was 0"), and restore removes the field
   entirely in that case rather than writing back a literal 0. Zeroing both
   `minReplicas` and `maxReplicas` (not just `minReplicas`) matters because
@@ -195,7 +195,7 @@ none of them share a common scaling API:
   only the minimum is floored while max stays positive.
 - **Job** (typed `batchv1`, vendored), but only ones with **no
   `ownerReferences`**: same `spec.suspend` mechanism as JobSet, reusing the
-  `gpuquota.example.com/original-suspend` annotation. A JobSet's or
+  `gpuquota.io/original-suspend` annotation. A JobSet's or
   CronJob's child Job is skipped - suspending the JobSet already covers its
   Jobs, and a CronJob's Job is a single scheduled run that isn't yet handled
   (see "Known gaps" below). Only a *standalone* Job (created directly, e.g.

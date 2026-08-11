@@ -11,7 +11,7 @@ import (
 // starts, since cumulative usage never decreases within a period and a new
 // period alone doesn't mean the underlying cost problem was addressed. The
 // operator removes the annotation itself once processed.
-const ResetAnnotation = "gpuquota.example.com/reset"
+const ResetAnnotation = "gpuquota.io/reset"
 
 // BudgetPeriod is a calendar-aligned billing cycle a GpuQuota's budget
 // resets on. These are fixed calendar boundaries, not rolling windows - e.g.

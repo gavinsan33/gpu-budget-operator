@@ -29,15 +29,15 @@ const (
 	// AnnotationOriginalReplicas remembers a Deployment's, StatefulSet's, or
 	// standalone ReplicaSet's replica count before it was scaled to zero, so
 	// it can be restored later.
-	AnnotationOriginalReplicas = "gpuquota.example.com/original-replicas"
+	AnnotationOriginalReplicas = "gpuquota.io/original-replicas"
 
 	// AnnotationOriginalReplicaSpec remembers an InferenceService component's
 	// original min/max replicas as JSON before it was zeroed out.
-	AnnotationOriginalReplicaSpec = "gpuquota.example.com/original-replica-spec"
+	AnnotationOriginalReplicaSpec = "gpuquota.io/original-replica-spec"
 
 	// AnnotationOriginalSuspend remembers a JobSet's or standalone Job's
 	// original suspend value.
-	AnnotationOriginalSuspend = "gpuquota.example.com/original-suspend"
+	AnnotationOriginalSuspend = "gpuquota.io/original-suspend"
 
 	ActionScaledToZero = "ScaledToZero"
 	ActionSuspended    = "Suspended"

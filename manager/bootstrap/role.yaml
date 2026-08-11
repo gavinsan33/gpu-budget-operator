@@ -4,7 +4,7 @@ metadata:
   name: gpu-quota-operator-manager-role
 rules:
 - apiGroups:
-  - gpuquota.example.com
+  - gpuquota.io
   resources:
   - gpuquotas
   verbs:
@@ -16,7 +16,7 @@ rules:
   - patch
   - delete
 - apiGroups:
-  - gpuquota.example.com
+  - gpuquota.io
   resources:
   - gpuquotas/status
   verbs:
@@ -24,7 +24,7 @@ rules:
   - update
   - patch
 - apiGroups:
-  - gpuquota.example.com
+  - gpuquota.io
   resources:
   - gpuquotas/finalizers
   verbs:

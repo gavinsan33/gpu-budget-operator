@@ -511,7 +511,7 @@ func TestReconcile_ResetAnnotationRestoresFullyWhenBackUnderBudget(t *testing.T)
 		},
 	}
 	dep.Spec.Replicas = int32Ptr(0)
-	dep.Annotations = map[string]string{"gpuquota.example.com/original-replicas": "3"}
+	dep.Annotations = map[string]string{"gpuquota.io/original-replicas": "3"}
 	gq.Annotations = map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"}
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
@@ -613,8 +613,8 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	if *gotStandalone.Spec.Replicas != 0 {
 		t.Fatalf("expected standalone replicaset scaled to 0, got %d replicas", *gotStandalone.Spec.Replicas)
 	}
-	if gotStandalone.Annotations["gpuquota.example.com/original-replicas"] != "3" {
-		t.Fatalf("expected original replicas annotation to record 3, got %q", gotStandalone.Annotations["gpuquota.example.com/original-replicas"])
+	if gotStandalone.Annotations["gpuquota.io/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", gotStandalone.Annotations["gpuquota.io/original-replicas"])
 	}
 
 	var gotOwned appsv1.ReplicaSet
@@ -653,8 +653,8 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	if *got.Spec.Replicas != 0 {
 		t.Fatalf("expected statefulset scaled to 0, got %d replicas", *got.Spec.Replicas)
 	}
-	if got.Annotations["gpuquota.example.com/original-replicas"] != "3" {
-		t.Fatalf("expected original replicas annotation to record 3, got %q", got.Annotations["gpuquota.example.com/original-replicas"])
+	if got.Annotations["gpuquota.io/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", got.Annotations["gpuquota.io/original-replicas"])
 	}
 }
 
