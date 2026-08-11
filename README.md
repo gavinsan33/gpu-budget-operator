@@ -199,22 +199,19 @@ the fallback to the system trust store handles that automatically.
    override per-namespace via `spec.prometheusURL` on individual
    `GpuQuota`s) — see "Prometheus authentication" above for what else needs
    to match.
-2. Update `manager/deploy/build.yaml`'s `spec.source.git.uri`/`ref` to point
-   at this repo's actual remote once it has one (it's a placeholder pointing
-   at the `go.mod` module path).
-3. `make manifests` — regenerate the CRD from the Go types.
-4. `make test` — run unit tests.
-5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`
+2. `make manifests` — regenerate the CRD from the Go types.
+3. `make test` — run unit tests.
+4. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`
    CRD plus the Namespace and cluster-scoped RBAC
    (`manager/bootstrap/`). Only needs re-running if the CRD or that RBAC
    changes.
-6. `make deploy` — **routine, no cluster-admin needed**: applies the
+5. `make deploy` — **routine, no cluster-admin needed**: applies the
    namespace-scoped resources in `manager/deploy/` (ServiceAccount,
    ConfigMap, BuildConfig/ImageStream, Deployment), builds the operator
    image in-cluster from git source, and rolls out the result. Safe to run
    repeatedly — see `make build-image` if you just want to rebuild without a
    full redeploy.
-7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
+6. Apply a `GpuQuota` in any namespace you want monitored, e.g.
    `oc apply -f samples/gavin-test-quota.yaml`.
 
 ## Uninstall

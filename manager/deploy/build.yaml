@@ -17,7 +17,7 @@ spec:
   source:
     type: Git
     git:
-      uri: https://github.com/gsanders/gpu-quota-operator.git
+      uri: https://github.com/gavinsan33/gpu-quota-operator
       ref: master
   strategy:
     type: Docker
