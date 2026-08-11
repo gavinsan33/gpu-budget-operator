@@ -65,14 +65,16 @@ to handle that, wired together via a custom `http.RoundTripper`
   is never reassigned outside tests.
 
 The RBAC binding this requires (OpenShift's built-in `cluster-monitoring-view`
-ClusterRole) and the CA bundle this needs mounted (via
-`service.beta.openshift.io/inject-cabundle: "true"` on a ConfigMap the
-service-ca operator populates) live in `manager/monitoring_rolebinding.yaml`
-and `manager/service-ca-configmap.yaml` respectively; `manager/deployment.yaml`
-mounts that ConfigMap at the exact path `serviceCACertFile` expects. None of
-this is required for a non-OpenShift Prometheus that doesn't sit behind an
-auth proxy; those two manifests plus `--prometheus-token-file` are the only
-OpenShift-specific pieces of the whole operator.
+ClusterRole) lives in `manager/bootstrap/monitoring_rolebinding.yaml`
+(cluster-scoped, applied by `make bootstrap`); the CA bundle this needs
+mounted (via `service.beta.openshift.io/inject-cabundle: "true"` on a
+ConfigMap the service-ca operator populates) lives in
+`manager/deploy/service-ca-configmap.yaml` (namespace-scoped, applied by
+`make deploy`), and `manager/deploy/deployment.yaml` mounts that ConfigMap
+at the exact path `serviceCACertFile` expects. None of this is required for
+a non-OpenShift Prometheus that doesn't sit behind an auth proxy; those two
+manifests plus `--prometheus-token-file` are the only OpenShift-specific
+pieces of the whole operator.
 
 ### GPU usage metric
 
@@ -195,14 +197,19 @@ present on any Kubernetes cluster.
   `./bin/controller-gen`, pinned version in the Makefile).
 - `make fmt` / `make vet` / `make test`
 - `make build` / `make run`
-- `make install` / `make uninstall` — CRD only
+- `make bootstrap` / `make unbootstrap` — **cluster-admin, one-time**: CRD +
+  `manager/bootstrap/` (Namespace, ClusterRole, ClusterRoleBindings). `oc
+  apply`/`oc delete` re-attempt every object on every invocation regardless
+  of whether it changed, so these need elevated RBAC every single time -
+  splitting them out means routine `deploy` never needs that RBAC.
 - `make build-image` — trigger (or wait on) an in-cluster image build via
-  manager/build.yaml's BuildConfig; run standalone to rebuild without a full
-  redeploy
-- `make deploy` / `make undeploy` — apply the `manager/` kustomize base,
-  build the image in-cluster, then `oc rollout restart` (a plain
-  `apps/v1` Deployment has no ImageChange trigger, so a manual restart is
-  required to actually pick up a freshly built image)
+  `manager/deploy/build.yaml`'s BuildConfig; run standalone to rebuild
+  without a full redeploy
+- `make deploy` / `make undeploy` — **routine, no cluster-admin needed**:
+  apply `manager/deploy/` (namespace-scoped only), build the image
+  in-cluster, then `oc rollout restart` (a plain `apps/v1` Deployment has no
+  ImageChange trigger, so a manual restart is required to actually pick up
+  a freshly built image)
 
 ## Code Structure
 
@@ -211,15 +218,21 @@ present on any Kubernetes cluster.
 - `controllers/gpuquota-controller.go` — the reconcile state machine.
 - `metrics/prometheus.go` — Prometheus HTTP API client + default PromQL.
 - `enforce/enforce.go` — scale-down/suspend/restore logic per workload kind.
-- `manager/` — kustomize base for the operator's own namespace/SA/RBAC/Deployment
-  (flat layout, not kubebuilder's split `config/{manager,rbac,default}` —
-  matches the convention used elsewhere in this environment).
-  `manager/build.yaml` holds the `ImageStream`/`BuildConfig` that build the
-  operator image in-cluster from git source (OpenShift's Build API) rather
-  than via local `docker build`/`docker push` to an external registry -
-  `manager/deployment.yaml`'s image field points directly at the resulting
-  ImageStreamTag via the internal registry service DNS
-  (`image-registry.openshift-image-registry.svc:5000/...`).
+- `manager/` — two separate kustomize bases (flat layout within each, not
+  kubebuilder's split `config/{manager,rbac,default}` — matches the
+  convention used elsewhere in this environment), split by required
+  privilege rather than by resource type:
+  - `manager/bootstrap/` — cluster-scoped, admin-only: Namespace,
+    ClusterRole, ClusterRoleBindings. Applied once via `make bootstrap`.
+  - `manager/deploy/` — namespace-scoped, routine: ServiceAccount,
+    service-ca ConfigMap, Deployment, and `build.yaml` (the
+    `ImageStream`/`BuildConfig` that build the operator image in-cluster
+    from git source via OpenShift's Build API, rather than local
+    `docker build`/`docker push` to an external registry -
+    `deployment.yaml`'s image field points directly at the resulting
+    ImageStreamTag via the internal registry service DNS
+    `image-registry.openshift-image-registry.svc:5000/...`). Applied
+    repeatedly via `make deploy`.
 - `config/crd/` — generated CRD manifest only.
 - `samples/` — example `GpuQuota` CRs.
 
@@ -249,7 +262,7 @@ present on any Kubernetes cluster.
 
 - Go 1.26+
 - `oc`, `kustomize`
-- An OpenShift cluster (the Build API used by `manager/build.yaml` is
-  OpenShift-specific, not vanilla Kubernetes)
+- An OpenShift cluster (the Build API used by `manager/deploy/build.yaml`
+  is OpenShift-specific, not vanilla Kubernetes)
 - A cluster with `dcgm-exporter` + Prometheus already scraping GPU metrics
   with pod/namespace labels attached

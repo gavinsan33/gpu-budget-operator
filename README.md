@@ -79,18 +79,19 @@ override.
 ## Requirements
 
 - Go 1.26+
-- An OpenShift cluster — `manager/build.yaml` builds the operator image
-  in-cluster via OpenShift's Build API (`BuildConfig`/`ImageStream`), so no
-  local Docker install or external registry is needed, but this specific
-  build mechanism won't work on vanilla Kubernetes (swap it for a plain
-  `docker build`/`docker push` + an `images:` kustomize override if you need
-  that).
+- An OpenShift cluster — `manager/deploy/build.yaml` builds the operator
+  image in-cluster via OpenShift's Build API (`BuildConfig`/`ImageStream`),
+  so no local Docker install or external registry is needed, but this
+  specific build mechanism won't work on vanilla Kubernetes (swap it for a
+  plain `docker build`/`docker push` + an `images:` kustomize override if
+  you need that).
 - A Prometheus (or Thanos) instance in-cluster that scrapes `dcgm-exporter`
   with pod-resource mapping enabled, so `DCGM_FI_DEV_GPU_UTIL` samples carry
   `namespace`/`pod` labels.
 - `oc`, `kustomize`
-- If targeting OpenShift's built-in monitoring (the `manager/` default): see
-  "Prometheus authentication" below for the RBAC/token/TLS pieces required.
+- If targeting OpenShift's built-in monitoring (the `manager/deploy`
+  default): see "Prometheus authentication" below for the RBAC/token/TLS
+  pieces required.
 - Optional: [JobSet](https://github.com/kubernetes-sigs/jobset) and
   [KServe](https://github.com/kserve/kserve) CRDs installed, if you want
   those workload types enforced (Deployment/StatefulSet/ReplicaSet/Job/Pod
@@ -163,8 +164,8 @@ stack (Thanos Querier over HTTPS), which requires both a Bearer token and a
 trusted TLS certificate - the operator does not get this "for free" just by
 running in-cluster. Three pieces make it work together:
 
-1. **RBAC**: `manager/monitoring_rolebinding.yaml` binds the operator's
-   ServiceAccount to OpenShift's built-in `cluster-monitoring-view`
+1. **RBAC**: `manager/bootstrap/monitoring_rolebinding.yaml` binds the
+   operator's ServiceAccount to OpenShift's built-in `cluster-monitoring-view`
    ClusterRole, so its token is actually authorized to read metrics.
 2. **Token**: `--prometheus-token-file` (defaults to
    `/var/run/secrets/kubernetes.io/serviceaccount/token`, which Kubernetes
@@ -172,9 +173,9 @@ running in-cluster. Three pieces make it work together:
    `Authorization: Bearer <token>`. Set it to `""` to disable auth entirely,
    e.g. against an unauthenticated dev Prometheus.
 3. **TLS trust**: automatic, with no flag or config to override it.
-   `manager/service-ca-configmap.yaml` creates a ConfigMap annotated for
-   OpenShift's service-ca operator to inject the cluster's service-serving
-   CA into; `manager/deployment.yaml` mounts it at
+   `manager/deploy/service-ca-configmap.yaml` creates a ConfigMap annotated
+   for OpenShift's service-ca operator to inject the cluster's
+   service-serving CA into; `manager/deploy/deployment.yaml` mounts it at
    `/etc/gpu-quota-operator/service-ca/service-ca.crt`, and the operator
    always looks for a CA bundle at that fixed path, trusting it if present
    and falling back to the system trust store if not. There's no way to
@@ -183,36 +184,42 @@ running in-cluster. Three pieces make it work together:
    TLS at a local proxy instead).
 
 Not on OpenShift, or using a different Prometheus? Edit
-`--default-prometheus-url` in `manager/deployment.yaml` to your endpoint,
-and drop or adjust `--prometheus-token-file`/`monitoring_rolebinding.yaml`/
-`service-ca-configmap.yaml` to match how that Prometheus authenticates (or
-doesn't). If it isn't behind OpenShift's service-ca and uses a certificate
-from a public CA (or plain HTTP), no changes are needed - the fallback to
-the system trust store handles that automatically.
+`--default-prometheus-url` in `manager/deploy/deployment.yaml` to your
+endpoint, and drop or adjust `--prometheus-token-file`/
+`manager/bootstrap/monitoring_rolebinding.yaml`/
+`manager/deploy/service-ca-configmap.yaml` to match how that Prometheus
+authenticates (or doesn't). If it isn't behind OpenShift's service-ca and
+uses a certificate from a public CA (or plain HTTP), no changes are needed -
+the fallback to the system trust store handles that automatically.
 
 ## Install
 
 1. Point the operator at your Prometheus by editing
-   `manager/deployment.yaml`'s `--default-prometheus-url` flag (or override
-   per-namespace via `spec.prometheusURL` on individual `GpuQuota`s) — see
-   "Prometheus authentication" above for what else needs to match.
-2. Update `manager/build.yaml`'s `spec.source.git.uri`/`ref` to point at
-   this repo's actual remote once it has one (it's a placeholder pointing at
-   the `go.mod` module path).
+   `manager/deploy/deployment.yaml`'s `--default-prometheus-url` flag (or
+   override per-namespace via `spec.prometheusURL` on individual
+   `GpuQuota`s) — see "Prometheus authentication" above for what else needs
+   to match.
+2. Update `manager/deploy/build.yaml`'s `spec.source.git.uri`/`ref` to point
+   at this repo's actual remote once it has one (it's a placeholder pointing
+   at the `go.mod` module path).
 3. `make manifests` — regenerate the CRD from the Go types.
 4. `make test` — run unit tests.
-5. `make install` — install the `GpuQuota` CRD.
-6. `make deploy` — applies `manager/` (including the `BuildConfig`/
-   `ImageStream`), builds the operator image in-cluster from git source, and
-   rolls out the result. No local Docker install or external registry
-   needed — see `make build-image` in the Makefile if you just want to
-   rebuild without a full redeploy.
+5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`
+   CRD plus the Namespace and cluster-scoped RBAC
+   (`manager/bootstrap/`). Only needs re-running if the CRD or that RBAC
+   changes.
+6. `make deploy` — **routine, no cluster-admin needed**: applies the
+   namespace-scoped resources in `manager/deploy/` (ServiceAccount,
+   ConfigMap, BuildConfig/ImageStream, Deployment), builds the operator
+   image in-cluster from git source, and rolls out the result. Safe to run
+   repeatedly — see `make build-image` if you just want to rebuild without a
+   full redeploy.
 7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
    `oc apply -f samples/gavin-test-quota.yaml`.
 
 ## Uninstall
 
 ```
-make undeploy
-make uninstall
+make undeploy      # namespace-scoped resources only
+make unbootstrap   # CRD, Namespace, and cluster-scoped RBAC (cluster-admin)
 ```

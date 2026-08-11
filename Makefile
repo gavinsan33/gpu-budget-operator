@@ -1,7 +1,8 @@
 # The operator image is built in-cluster from source by the BuildConfig in
-# manager/build.yaml, not locally with docker - see the `build-image` and
-# `deploy` targets below. IMAGE_NAMESPACE/IMAGE_NAME must match
-# manager/namespace.yaml and manager/build.yaml's BuildConfig/ImageStream name.
+# manager/deploy/build.yaml, not locally with docker - see the `build-image`
+# and `deploy` targets below. IMAGE_NAMESPACE/IMAGE_NAME must match
+# manager/bootstrap/namespace.yaml and manager/deploy/build.yaml's
+# BuildConfig/ImageStream name.
 IMAGE_NAMESPACE ?= gpu-quota-operator-system
 IMAGE_NAME ?= gpu-quota-operator
 
@@ -58,17 +59,27 @@ run: fmt vet ## Run from your host (requires cluster access).
 	go run ./main.go
 
 ##@ Deployment
+#
+# Split into a one-time, cluster-admin `bootstrap` (CRD, Namespace,
+# ClusterRole/ClusterRoleBindings - things `oc apply` will re-attempt on
+# every invocation regardless of whether they changed, so they need
+# elevated RBAC every single time otherwise) and a routine `deploy` that
+# only touches namespace-scoped objects a non-admin edit/admin role in
+# gpu-quota-operator-system can apply repeatedly. Run `bootstrap` once (or
+# whenever the CRD/RBAC itself changes); run `deploy` as often as you like.
 
-.PHONY: install
-install: manifests ## Install CRDs into the cluster.
+.PHONY: bootstrap
+bootstrap: manifests ## One-time cluster-admin setup: install the CRD, Namespace, and cluster-scoped RBAC.
 	oc apply -f config/crd/
+	oc apply -k manager/bootstrap/
 
-.PHONY: uninstall
-uninstall: manifests ## Uninstall CRDs from the cluster.
+.PHONY: unbootstrap
+unbootstrap: ## Remove everything `make bootstrap` installed.
+	oc delete -k manager/bootstrap/
 	oc delete -f config/crd/
 
 .PHONY: build-image
-build-image: ## Trigger (or wait on) an in-cluster build of the operator image via manager/build.yaml's BuildConfig.
+build-image: ## Trigger (or wait on) an in-cluster build of the operator image via manager/deploy/build.yaml's BuildConfig.
 	@if oc get build/$(IMAGE_NAME)-1 -n $(IMAGE_NAMESPACE) >/dev/null 2>&1; then \
 		echo "initial build already auto-triggered by the BuildConfig's ConfigChange trigger - waiting on it instead of starting a redundant one"; \
 		oc wait --for=condition=Complete build/$(IMAGE_NAME)-1 -n $(IMAGE_NAMESPACE) --timeout=300s; \
@@ -77,15 +88,15 @@ build-image: ## Trigger (or wait on) an in-cluster build of the operator image v
 	fi
 
 .PHONY: deploy
-deploy: manifests ## Deploy controller to the cluster: apply manifests, build the image in-cluster, then roll out.
-	oc apply -k manager/
+deploy: ## Routine redeploy: apply namespace-scoped resources, build the image in-cluster, then roll out. Requires `make bootstrap` to have run at least once.
+	oc apply -k manager/deploy/
 	$(MAKE) build-image
 	oc rollout restart deployment/$(IMAGE_NAME)-controller-manager -n $(IMAGE_NAMESPACE)
 	oc rollout status deployment/$(IMAGE_NAME)-controller-manager -n $(IMAGE_NAMESPACE) --timeout=120s
 
 .PHONY: undeploy
-undeploy: ## Undeploy controller from the cluster.
-	oc delete -k manager/
+undeploy: ## Undeploy the namespace-scoped resources. Leaves the CRD/Namespace/RBAC from `make bootstrap` in place - use `make unbootstrap` for those.
+	oc delete -k manager/deploy/
 
 ##@ Build Dependencies
 

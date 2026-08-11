@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Cluster-scoped, admin-only objects: create/patch on these needs elevated
+# RBAC an operator-deploying user often doesn't have day-to-day. Applied
+# once via `make bootstrap` by a cluster-admin; `make deploy` never touches
+# this directory, so routine redeploys don't need these permissions.
+resources:
+- namespace.yaml
+- role.yaml
+- role_binding.yaml
+- monitoring_rolebinding.yaml
