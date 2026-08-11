@@ -12,11 +12,6 @@ type GpuQuotaSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	GPULimit int32 `json:"gpuLimit"`
 
-	// PrometheusURL overrides the operator-wide default Prometheus/Thanos
-	// endpoint used to evaluate GPU usage for this namespace.
-	// +optional
-	PrometheusURL string `json:"prometheusURL,omitempty"`
-
 	// Query overrides the default PromQL used to compute current GPU usage.
 	// The string "__NAMESPACE__" is substituted with the namespace name.
 	// The query must return a single scalar/vector sample representing the

@@ -18,10 +18,10 @@ spec:
       serviceAccountName: gpu-quota-operator-controller-manager
       containers:
       - name: manager
-        # Resolves to whatever manager/build.yaml's BuildConfig most recently
-        # built into this ImageStreamTag - see the Makefile's `build-image`
-        # target. `oc rollout restart` after a build is required to actually
-        # pick up a new image, since plain apps/v1 Deployments (unlike
+        # Resolves to whatever build.yaml's BuildConfig most recently built
+        # into this ImageStreamTag - see the Makefile's `build-image` target.
+        # `oc rollout restart` after a build is required to actually pick up
+        # a new image, since plain apps/v1 Deployments (unlike
         # DeploymentConfigs) have no ImageChange trigger of their own.
         image: image-registry.openshift-image-registry.svc:5000/gpu-quota-operator-system/gpu-quota-operator:latest
         imagePullPolicy: Always
@@ -29,14 +29,14 @@ spec:
         - /manager
         args:
         - --leader-elect
-        # OpenShift's built-in monitoring stack. Requires the
-        # cluster-monitoring-view ClusterRoleBinding (monitoring_rolebinding.yaml).
-        # TLS trust is automatic: the operator always looks for a CA bundle at
-        # /etc/gpu-quota-operator/service-ca/service-ca.crt (mounted below)
-        # and falls back to the system trust store if it isn't present - no
-        # flag controls this. Individual GpuQuotas can override the URL
-        # itself via spec.prometheusURL.
-        - --default-prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
+        # The one, cluster-wide Prometheus every GpuQuota is evaluated
+        # against - there is no per-namespace override. Auth (Bearer token)
+        # and TLS trust (the mounted CA bundle below, or the system trust
+        # store if absent) are always automatic, with no flag to change
+        # either. This default targets OpenShift's built-in monitoring
+        # stack, which requires the cluster-monitoring-view
+        # ClusterRoleBinding (../bootstrap/monitoring_rolebinding.yaml).
+        - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
         volumeMounts:
         - name: service-ca
           mountPath: /etc/gpu-quota-operator/service-ca

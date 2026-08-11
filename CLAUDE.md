@@ -18,8 +18,13 @@ There is no cross-namespace state — each `GpuQuota` is fully independent, so
 multiple teams' quotas can't interfere with each other.
 
 Reconcile pipeline per pass:
-1. Resolve which Prometheus to query: `spec.prometheusURL` if set, else the
-   operator-wide `--default-prometheus-url` flag.
+1. Query the single, cluster-wide Prometheus set via `--prometheus-url` -
+   there is no per-namespace override of *which* Prometheus is queried
+   (only the PromQL run against it is overridable, via `spec.query`). One
+   Prometheus for the whole cluster keeps quotas comparable across
+   namespaces; letting each namespace point at a different backend would
+   make "GPU usage" mean different things depending which `GpuQuota` you're
+   looking at.
 2. Run a PromQL query (`spec.query` override, or `metrics.DefaultQueryTemplate`)
    against that Prometheus to get the current active-GPU count for the
    namespace.
@@ -34,35 +39,41 @@ Reconcile pipeline per pass:
 
 ### Authenticating to Prometheus (`metrics/prometheus.go`)
 
-The zero-value `metrics.Config` talks plain, unauthenticated HTTP - fine
-against a throwaway dev Prometheus, but OpenShift's in-cluster Thanos
-Querier/Prometheus sit behind an `oauth-proxy` requiring both a Bearer token
-and a trusted TLS certificate. Two things happen inside `metrics.NewClient`
-to handle that, wired together via a custom `http.RoundTripper`
-(`bearerTokenRoundTripper`) rather than anything built into
-`client_golang/api`, which has no auth support of its own:
+`metrics.Config` has exactly one field, `Address` - auth and TLS trust are
+never per-client configuration, they're always-on package behavior, wired
+together via a custom `http.RoundTripper` (`bearerTokenRoundTripper`)
+rather than anything built into `client_golang/api`, which has no auth
+support of its own. Both follow the identical shape: read a fixed,
+well-known path; use it if present; silently degrade (not error) if it's
+genuinely absent; hard-error only if it's present but broken:
 
-- **Token**: `Config.TokenFile` is read from disk **on every request**, not
-  cached at client-creation time. This matters because Kubernetes rotates
-  projected ServiceAccount tokens in place roughly hourly - caching the
-  token read at startup would work fine initially and then silently start
-  failing with 401s well into the operator's uptime, which would be a nasty
-  thing to debug in production.
-- **TLS trust**: automatic, not configurable. `buildTransport` always reads
-  the fixed path `serviceCACertFile`
-  (`/etc/gpu-quota-operator/service-ca/service-ca.crt`) and, if present,
-  parses it into an `x509.CertPool` used as `tls.Config.RootCAs` on a clone
-  of `http.DefaultTransport` (cloned, not built from scratch, to keep
-  proxy/env-var support). If the file is missing (`os.IsNotExist`), it
-  silently falls back to the system trust store rather than erroring -
-  deliberately, so the operator still works unmodified against a
-  non-OpenShift Prometheus with a public-CA or plain-HTTP endpoint. Any
-  *other* read error (permissions, corrupt PEM) does fail loudly, since that
-  indicates the mount is broken rather than absent. There is intentionally
-  no `Config` field, flag, or CR field to override the path or skip
-  verification - `serviceCACertFile` is a `var` rather than a `const` purely
-  so `metrics/prometheus_test.go` can point it at a temp file per test; it
-  is never reassigned outside tests.
+- **Token**: `bearerTokenRoundTripper.RoundTrip` reads
+  `serviceAccountTokenFile` (`/var/run/secrets/kubernetes.io/serviceaccount/token`,
+  the path Kubernetes auto-mounts a token into every pod at) from disk **on
+  every request**, not cached at client-creation time. This matters because
+  Kubernetes rotates projected ServiceAccount tokens in place roughly
+  hourly - caching the token read at startup would work fine initially and
+  then silently start failing with 401s well into the operator's uptime,
+  which would be a nasty thing to debug in production. If the file is
+  missing (`os.IsNotExist` - e.g. running locally outside a pod, or the
+  target Prometheus doesn't require auth), the request goes out with no
+  `Authorization` header instead of failing.
+- **TLS trust**: `buildTransport` always reads the fixed path
+  `serviceCACertFile` (`/etc/gpu-quota-operator/service-ca/service-ca.crt`)
+  and, if present, parses it into an `x509.CertPool` used as
+  `tls.Config.RootCAs` on a clone of `http.DefaultTransport` (cloned, not
+  built from scratch, to keep proxy/env-var support). If the file is
+  missing, it silently falls back to the system trust store - so the
+  operator still works unmodified against a non-OpenShift Prometheus with a
+  public-CA or plain-HTTP endpoint.
+
+In both cases, any *other* read error (permissions, corrupt PEM/JWT) does
+fail loudly, since that indicates the mount is broken rather than absent.
+There is intentionally no `Config` field, flag, or CR field to override
+either path or skip verification/auth - `serviceCACertFile` and
+`serviceAccountTokenFile` are `var`s rather than `const`s purely so
+`metrics/prometheus_test.go` can point them at temp files per test; neither
+is ever reassigned outside tests.
 
 The RBAC binding this requires (OpenShift's built-in `cluster-monitoring-view`
 ClusterRole) lives in `manager/bootstrap/monitoring_rolebinding.yaml`
@@ -73,8 +84,7 @@ ConfigMap the service-ca operator populates) lives in
 `make deploy`), and `manager/deploy/deployment.yaml` mounts that ConfigMap
 at the exact path `serviceCACertFile` expects. None of this is required for
 a non-OpenShift Prometheus that doesn't sit behind an auth proxy; those two
-manifests plus `--prometheus-token-file` are the only OpenShift-specific
-pieces of the whole operator.
+manifests are the only OpenShift-specific pieces of the whole operator.
 
 ### GPU usage metric
 

@@ -28,23 +28,19 @@ type GpuQuotaReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// DefaultPrometheusURL is used when a GpuQuota does not set
-	// spec.prometheusURL.
-	DefaultPrometheusURL string
-
-	// PrometheusTokenFile is the path to a Bearer token attached to every
-	// Prometheus request (re-read per-request, since projected ServiceAccount
-	// tokens rotate in place). Empty disables auth - fine for a dev
-	// Prometheus, but OpenShift's in-cluster Thanos Querier requires this.
-	// TLS trust is not configurable here - see metrics.NewClient.
-	PrometheusTokenFile string
+	// PrometheusURL is the single, cluster-wide Prometheus/Thanos endpoint
+	// every GpuQuota is evaluated against. Set once via the operator's
+	// --prometheus-url flag - there is no per-namespace override, since
+	// splitting GPU accounting across multiple Prometheus instances would
+	// make quotas impossible to compare or reason about cluster-wide.
+	PrometheusURL string
 
 	// Enforcer performs the actual scale-down/suspend/restore operations.
 	// Defaults to &enforce.Enforcer{Client: r.Client} on first use if nil.
 	Enforcer *enforce.Enforcer
 
-	promClientsMu sync.Mutex
-	promClients   map[string]*metrics.Client
+	promClientMu sync.Mutex
+	promClient   *metrics.Client
 }
 
 // +kubebuilder:rbac:groups=gpuquota.example.com,resources=gpuquotas,verbs=get;list;watch;create;update;patch;delete
@@ -67,7 +63,7 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	promClient, err := r.prometheusClientFor(r.resolvePrometheusURL(gq))
+	promClient, err := r.prometheusClient()
 	if err != nil {
 		return r.markFailed(ctx, &gq, "PrometheusClientError", err)
 	}
@@ -185,27 +181,21 @@ func (r *GpuQuotaReconciler) enforcer() *enforce.Enforcer {
 	return r.Enforcer
 }
 
-func (r *GpuQuotaReconciler) prometheusClientFor(address string) (*metrics.Client, error) {
-	if address == "" {
-		return nil, fmt.Errorf("no prometheus URL configured: set spec.prometheusURL or the operator's default")
+func (r *GpuQuotaReconciler) prometheusClient() (*metrics.Client, error) {
+	if r.PrometheusURL == "" {
+		return nil, fmt.Errorf("no prometheus URL configured: set the operator's --prometheus-url flag")
 	}
 
-	r.promClientsMu.Lock()
-	defer r.promClientsMu.Unlock()
-	if r.promClients == nil {
-		r.promClients = map[string]*metrics.Client{}
+	r.promClientMu.Lock()
+	defer r.promClientMu.Unlock()
+	if r.promClient != nil {
+		return r.promClient, nil
 	}
-	if c, ok := r.promClients[address]; ok {
-		return c, nil
-	}
-	c, err := metrics.NewClient(metrics.Config{
-		Address:   address,
-		TokenFile: r.PrometheusTokenFile,
-	})
+	c, err := metrics.NewClient(metrics.Config{Address: r.PrometheusURL})
 	if err != nil {
 		return nil, err
 	}
-	r.promClients[address] = c
+	r.promClient = c
 	return c, nil
 }
 
@@ -226,13 +216,6 @@ func mergeEnforced(existing, additions []gpuquotav1alpha1.EnforcedResource) []gp
 	return existing
 }
 
-func (r *GpuQuotaReconciler) resolvePrometheusURL(gq gpuquotav1alpha1.GpuQuota) string {
-	if gq.Spec.PrometheusURL != "" {
-		return gq.Spec.PrometheusURL
-	}
-	return r.DefaultPrometheusURL
-}
-
 func durationOrDefault(d, fallback time.Duration) time.Duration {
 	if d <= 0 {
 		return fallback
@@ -247,8 +230,7 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// SetupWithManager wires the reconciler into the manager, defaulting
-// unconfigured prometheus URLs from DefaultPrometheusURL.
+// SetupWithManager wires the reconciler into the manager.
 func (r *GpuQuotaReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gpuquotav1alpha1.GpuQuota{}).

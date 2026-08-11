@@ -32,6 +32,16 @@ func withServiceCACertFile(t *testing.T, path string) {
 	t.Cleanup(func() { serviceCACertFile = original })
 }
 
+// withServiceAccountTokenFile is the TokenFile equivalent of
+// withServiceCACertFile: points the package-private serviceAccountTokenFile
+// var at path for the duration of the test.
+func withServiceAccountTokenFile(t *testing.T, path string) {
+	t.Helper()
+	original := serviceAccountTokenFile
+	serviceAccountTokenFile = path
+	t.Cleanup(func() { serviceAccountTokenFile = original })
+}
+
 func writeCAFile(t *testing.T, cert *x509.Certificate) string {
 	t.Helper()
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
@@ -55,9 +65,9 @@ func TestActiveGPUCount_AutoTrustsMountedServiceCAAndSendsBearerToken(t *testing
 	// (test-only) serviceCACertFile override at it to exercise the same
 	// code path that trusts the real mounted service-ca bundle in-cluster.
 	withServiceCACertFile(t, writeCAFile(t, server.Certificate()))
-	tokenFile := writeTokenFile(t, "test-token")
+	withServiceAccountTokenFile(t, writeTokenFile(t, "test-token"))
 
-	c, err := NewClient(Config{Address: server.URL, TokenFile: tokenFile})
+	c, err := NewClient(Config{Address: server.URL})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -97,7 +107,9 @@ func TestActiveGPUCount_MissingServiceCAFallsBackToSystemTrustStore(t *testing.T
 	}
 }
 
-func TestActiveGPUCount_NoTokenFileSendsNoAuthHeader(t *testing.T) {
+func TestActiveGPUCount_MissingTokenFileSendsNoAuthHeader(t *testing.T) {
+	withServiceAccountTokenFile(t, filepath.Join(t.TempDir(), "does-not-exist-token"))
+
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -114,6 +126,6 @@ func TestActiveGPUCount_NoTokenFileSendsNoAuthHeader(t *testing.T) {
 		t.Fatalf("ActiveGPUCount: %v", err)
 	}
 	if gotAuth != "" {
-		t.Fatalf("expected no Authorization header, got %q", gotAuth)
+		t.Fatalf("expected no Authorization header when the token file is absent, got %q", gotAuth)
 	}
 }

@@ -27,8 +27,7 @@ independently against the same namespace's workloads.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `gpuLimit` | int32 | *(required)* | Max number of GPUs allowed to be concurrently active (reporting non-zero utilization) in this namespace. This is a count of GPUs in use, not a raw utilization percentage and not `nvidia.com/gpu` *requests* — a namespace can request more GPUs than its limit as long as it isn't actively running on more than `gpuLimit` at once. |
-| `prometheusURL` | string | operator's `--default-prometheus-url` flag | Overrides which Prometheus/Thanos endpoint is queried for this namespace's usage. Use this when different teams' metrics live in different Prometheus instances. Authentication (`--prometheus-token-file`) and TLS trust (always automatic, see "Prometheus authentication" below) are operator-wide, not per-`GpuQuota` - all endpoints you point at must accept the same credentials/CA. |
-| `query` | string | `metrics.DefaultQueryTemplate` (counts distinct GPU UUIDs with `DCGM_FI_DEV_GPU_UTIL > 0`) | Overrides the PromQL used to compute current usage. The literal string `__NAMESPACE__` is substituted with the namespace name before the query runs. The query must return a single vector/scalar sample. Use this to quota on something other than active-GPU-count, e.g. GPU memory (`DCGM_FI_DEV_FB_USED`). |
+| `query` | string | `metrics.DefaultQueryTemplate` (counts distinct GPU UUIDs with `DCGM_FI_DEV_GPU_UTIL > 0`) | Overrides the PromQL used to compute current usage. The literal string `__NAMESPACE__` is substituted with the namespace name before the query runs. The query must return a single vector/scalar sample. Use this to quota on something other than active-GPU-count, e.g. GPU memory (`DCGM_FI_DEV_FB_USED`). Which Prometheus is queried is not overridable here - see `--prometheus-url` below; every `GpuQuota` in the cluster is evaluated against the same one. |
 | `checkInterval` | duration | `1m` | How often usage is re-evaluated while the namespace is compliant. |
 | `gracePeriod` | duration | `2m` | How long usage must stay *continuously* over `gpuLimit` before enforcement fires. Absorbs short bursts (e.g. a batch job briefly spiking GPU count) without punishing them. The streak resets to zero the moment usage dips back under the limit, even for one check. |
 | `cooldownPeriod` | duration | `5m` | Minimum time between successive enforcement passes against the same namespace. Prevents re-enforcing (and fighting an in-progress restore) on every reconcile once workloads are already scaled down. |
@@ -73,7 +72,7 @@ status:
     enforcedAt: "2026-08-10T14:02:00Z"
 ```
 
-See `samples/` for more examples, including a per-namespace Prometheus/query
+See `samples/` for more examples, including a per-namespace `spec.query`
 override.
 
 ## Requirements
@@ -159,20 +158,24 @@ details.
 
 ## Prometheus authentication
 
-The default `manager/` manifests target OpenShift's built-in monitoring
-stack (Thanos Querier over HTTPS), which requires both a Bearer token and a
-trusted TLS certificate - the operator does not get this "for free" just by
-running in-cluster. Three pieces make it work together:
+Every `GpuQuota` in the cluster is evaluated against one single,
+cluster-wide Prometheus, set once via `--prometheus-url` - there's no
+per-namespace override. The default `manager/` manifests target OpenShift's
+built-in monitoring stack (Thanos Querier over HTTPS), which requires both a
+Bearer token and a trusted TLS certificate - the operator does not get this
+"for free" just by running in-cluster. Three pieces make it work together:
 
 1. **RBAC**: `manager/bootstrap/monitoring_rolebinding.yaml` binds the
    operator's ServiceAccount to OpenShift's built-in `cluster-monitoring-view`
    ClusterRole, so its token is actually authorized to read metrics.
-2. **Token**: `--prometheus-token-file` (defaults to
-   `/var/run/secrets/kubernetes.io/serviceaccount/token`, which Kubernetes
-   auto-mounts into every pod) is read fresh on every request and sent as
-   `Authorization: Bearer <token>`. Set it to `""` to disable auth entirely,
-   e.g. against an unauthenticated dev Prometheus.
-3. **TLS trust**: automatic, with no flag or config to override it.
+2. **Token**: automatic, with no flag or config to override it. Kubernetes
+   auto-mounts a Bearer token into every pod at
+   `/var/run/secrets/kubernetes.io/serviceaccount/token`; the operator
+   always looks for it there and attaches it as `Authorization: Bearer
+   <token>` if present, falling back to an unauthenticated request if not
+   (e.g. running locally outside a pod, or against a dev Prometheus that
+   doesn't require auth).
+3. **TLS trust**: also automatic, with no flag or config to override it.
    `manager/deploy/service-ca-configmap.yaml` creates a ConfigMap annotated
    for OpenShift's service-ca operator to inject the cluster's
    service-serving CA into; `manager/deploy/deployment.yaml` mounts it at
@@ -183,22 +186,20 @@ running in-cluster. Three pieces make it work together:
    self-signed dev Prometheus, do it outside the operator (e.g. terminate
    TLS at a local proxy instead).
 
-Not on OpenShift, or using a different Prometheus? Edit
-`--default-prometheus-url` in `manager/deploy/deployment.yaml` to your
-endpoint, and drop or adjust `--prometheus-token-file`/
+Not on OpenShift, or using a different Prometheus? Edit `--prometheus-url`
+in `manager/deploy/deployment.yaml` to your endpoint, and drop or adjust
 `manager/bootstrap/monitoring_rolebinding.yaml`/
 `manager/deploy/service-ca-configmap.yaml` to match how that Prometheus
 authenticates (or doesn't). If it isn't behind OpenShift's service-ca and
-uses a certificate from a public CA (or plain HTTP), no changes are needed -
-the fallback to the system trust store handles that automatically.
+uses a certificate from a public CA (or plain HTTP) and doesn't require
+auth, no changes are needed - the fallback to the system trust store and to
+an unauthenticated request both happen automatically.
 
 ## Install
 
-1. Point the operator at your Prometheus by editing
-   `manager/deploy/deployment.yaml`'s `--default-prometheus-url` flag (or
-   override per-namespace via `spec.prometheusURL` on individual
-   `GpuQuota`s) — see "Prometheus authentication" above for what else needs
-   to match.
+1. Point the operator at your (single, cluster-wide) Prometheus by editing
+   `manager/deploy/deployment.yaml`'s `--prometheus-url` flag — see
+   "Prometheus authentication" above for what else needs to match.
 2. `make manifests` — regenerate the CRD from the Go types.
 3. `make test` — run unit tests.
 4. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`

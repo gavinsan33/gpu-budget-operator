@@ -86,11 +86,6 @@ spec:
                   GracePeriod is how long usage must remain continuously over GPULimit
                   before the operator enforces the quota. This absorbs short bursts.
                 type: string
-              prometheusURL:
-                description: |-
-                  PrometheusURL overrides the operator-wide default Prometheus/Thanos
-                  endpoint used to evaluate GPU usage for this namespace.
-                type: string
               query:
                 description: |-
                   Query overrides the default PromQL used to compute current GPU usage.

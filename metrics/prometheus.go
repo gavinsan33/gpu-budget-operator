@@ -33,33 +33,30 @@ type Client struct {
 
 // serviceCACertFile is the path the operator's Deployment mounts an
 // OpenShift-injected service-serving CA bundle to (see
-// manager/service-ca-configmap.yaml and manager/deployment.yaml). There is
-// deliberately no flag or Config field to override this or to skip TLS
-// verification - trusting it, when present, happens automatically. If the
-// file isn't there (e.g. running outside OpenShift, or against a plain-HTTP
-// dev Prometheus), the client just falls back to the system trust store.
-var serviceCACertFile = "/etc/gpu-quota-operator/service-ca/service-ca.crt"
+// manager/deploy/service-ca-configmap.yaml and manager/deploy/deployment.yaml).
+// serviceAccountTokenFile is the path Kubernetes auto-mounts a bearer token
+// into every pod at. Neither has a flag or Config field to override -
+// trusting/sending them, when present, happens automatically. If either
+// file is missing (e.g. running outside a cluster, or against a plain-HTTP
+// dev Prometheus that doesn't require auth), the client falls back to no
+// custom CA / no Authorization header respectively, rather than erroring.
+var (
+	serviceCACertFile       = "/etc/gpu-quota-operator/service-ca/service-ca.crt"
+	serviceAccountTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+)
 
-// Config configures how a Client authenticates to Prometheus. The zero
-// value talks plain, unauthenticated HTTP - fine for a dev Prometheus, but
-// OpenShift's in-cluster Thanos Querier/Prometheus sit behind an
-// oauth-proxy that requires a Bearer token, so a real deployment needs
-// TokenFile set.
+// Config configures which Prometheus a Client talks to. TLS trust and
+// Bearer-token auth are always automatic (see serviceCACertFile/
+// serviceAccountTokenFile) - there is nothing else to configure per-client.
 type Config struct {
 	// Address is the base URL of the Prometheus/Thanos endpoint, e.g.
 	// "https://thanos-querier.openshift-monitoring.svc:9091".
 	Address string
-
-	// TokenFile is the path to a bearer token sent as the Authorization
-	// header on every request. Re-read on every request rather than cached,
-	// since projected ServiceAccount tokens are rotated in place. Empty
-	// disables auth.
-	TokenFile string
 }
 
 // NewClient builds a Prometheus client from cfg.
 func NewClient(cfg Config) (*Client, error) {
-	transport, err := buildTransport(cfg)
+	transport, err := buildTransport()
 	if err != nil {
 		return nil, fmt.Errorf("building transport for %q: %w", cfg.Address, err)
 	}
@@ -70,7 +67,7 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{api: promv1.NewAPI(c)}, nil
 }
 
-func buildTransport(cfg Config) (http.RoundTripper, error) {
+func buildTransport() (http.RoundTripper, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	pemBytes, err := os.ReadFile(serviceCACertFile)
@@ -87,28 +84,31 @@ func buildTransport(cfg Config) (http.RoundTripper, error) {
 		return nil, fmt.Errorf("reading service CA bundle %q: %w", serviceCACertFile, err)
 	}
 
-	return &bearerTokenRoundTripper{tokenFile: cfg.TokenFile, base: transport}, nil
+	return &bearerTokenRoundTripper{base: transport}, nil
 }
 
-// bearerTokenRoundTripper attaches a Bearer token read fresh from tokenFile
-// on every request, since Kubernetes rotates projected ServiceAccount
-// tokens in place roughly hourly - caching the token at startup would cause
-// auth to silently start failing well into the operator's lifetime.
+// bearerTokenRoundTripper attaches a Bearer token read fresh from
+// serviceAccountTokenFile on every request, since Kubernetes rotates
+// projected ServiceAccount tokens in place roughly hourly - caching the
+// token at startup would cause auth to silently start failing well into the
+// operator's lifetime. If the token file isn't present at all (e.g. running
+// outside a pod), requests go out with no Authorization header rather than
+// failing outright.
 type bearerTokenRoundTripper struct {
-	tokenFile string
-	base      http.RoundTripper
+	base http.RoundTripper
 }
 
 func (t *bearerTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.tokenFile == "" {
-		return t.base.RoundTrip(req)
+	token, err := os.ReadFile(serviceAccountTokenFile)
+	switch {
+	case err == nil:
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	case os.IsNotExist(err):
+		// Not running in a pod - send the request unauthenticated.
+	default:
+		return nil, fmt.Errorf("reading bearer token file %q: %w", serviceAccountTokenFile, err)
 	}
-	token, err := os.ReadFile(t.tokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading bearer token file %q: %w", t.tokenFile, err)
-	}
-	req = req.Clone(req.Context())
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 	return t.base.RoundTrip(req)
 }
 

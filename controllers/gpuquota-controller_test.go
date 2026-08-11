@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,21 @@ func promStub(t *testing.T, gpuCount int) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"%d"]}]}}`, gpuCount)
 	}))
+}
+
+// promStubVar is like promStub, but the returned count can be changed after
+// the server starts without changing its address - needed since
+// GpuQuotaReconciler.PrometheusURL is now fixed for the reconciler's
+// lifetime (no more per-namespace override to swap between two servers).
+func promStubVar(t *testing.T, initial int32) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var count atomic.Int32
+	count.Store(initial)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"%d"]}]}}`, count.Load())
+	}))
+	return server, &count
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -81,11 +97,11 @@ func TestReconcile_CompliantUsageDoesNotEnforce(t *testing.T) {
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec:       gpuquotav1alpha1.GpuQuotaSpec{GPULimit: 4, PrometheusURL: prom.URL},
+		Spec:       gpuquotav1alpha1.GpuQuotaSpec{GPULimit: 4},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -120,14 +136,13 @@ func TestReconcile_ViolationWaitsOutGracePeriodBeforeEnforcing(t *testing.T) {
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Hour}, // long enough that a single reconcile won't cross it
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Hour}, // long enough that a single reconcile won't cross it
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -153,17 +168,17 @@ func TestReconcile_ViolationWaitsOutGracePeriodBeforeEnforcing(t *testing.T) {
 }
 
 func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T) {
-	prom := promStub(t, 10)
+	prom, gpuCount := promStubVar(t, 10)
+	defer prom.Close()
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	past := metav1.NewTime(time.Now().Add(-time.Hour))
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
-			AutoRestore:   true,
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
+			AutoRestore: true,
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{
 			FirstViolationTime: &past, // simulate the grace period already having elapsed
@@ -171,7 +186,7 @@ func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -199,13 +214,7 @@ func TestReconcile_EnforcesAfterGracePeriodThenRestoresOnCompliance(t *testing.T
 	}
 
 	// Now usage drops back under quota; the enforced deployment should be restored.
-	prom.Close()
-	prom = promStub(t, 1)
-	defer prom.Close()
-	got.Spec.PrometheusURL = prom.URL
-	if err := c.Update(context.Background(), &got); err != nil {
-		t.Fatal(err)
-	}
+	gpuCount.Store(1)
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile after recovery: %v", err)
@@ -360,15 +369,14 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(barePod, ownedPod, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -407,15 +415,14 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneRS, ownedRS, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -450,16 +457,15 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
-			AutoRestore:   true,
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
+			AutoRestore: true,
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -487,15 +493,14 @@ func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneJob, ownedJob, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -528,15 +533,14 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	gq := &gpuquotav1alpha1.GpuQuota{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
 		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			GPULimit:      4,
-			PrometheusURL: prom.URL,
-			GracePeriod:   metav1.Duration{Duration: time.Minute},
+			GPULimit:    4,
+			GracePeriod: metav1.Duration{Duration: time.Minute},
 		},
 		Status: gpuquotav1alpha1.GpuQuotaStatus{FirstViolationTime: &past},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
