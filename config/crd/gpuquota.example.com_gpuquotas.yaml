@@ -17,12 +17,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.gpuLimit
-      name: Limit
-      type: integer
-    - jsonPath: .status.currentUsage
-      name: Usage
-      type: integer
+    - jsonPath: .spec.period
+      name: Period
+      type: string
+    - jsonPath: .status.gpuHoursUsed
+      name: GPUHoursUsed
+      type: string
+    - jsonPath: .status.dollarsUsed
+      name: DollarsUsed
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -51,54 +54,65 @@ spec:
           metadata:
             type: object
           spec:
-            description: GpuQuotaSpec defines the GPU budget for the namespace the
-              GpuQuota lives in.
+            description: |-
+              GpuQuotaSpec defines a cumulative GPU budget for the namespace the
+              GpuQuota lives in, over a recurring calendar period.
             properties:
-              autoRestore:
-                default: true
-                description: |-
-                  AutoRestore controls whether workloads that were scaled down/suspended
-                  by this controller are automatically restored once usage falls back
-                  under GPULimit.
-                type: boolean
               checkInterval:
-                default: 1m
-                description: |-
-                  CheckInterval is how often usage is re-evaluated while the namespace
-                  is within quota.
-                type: string
-              cooldownPeriod:
                 default: 5m
-                description: |-
-                  CooldownPeriod is the minimum time between enforcement actions against
-                  the same namespace, to avoid repeatedly thrashing workloads.
+                description: CheckInterval is how often cumulative usage is re-evaluated.
                 type: string
-              gpuLimit:
+              dollarsLimit:
                 description: |-
-                  GPULimit is the maximum number of GPUs that may be concurrently active
-                  (i.e. reporting non-zero utilization) across the namespace.
-                format: int32
-                minimum: 0
-                type: integer
-              gracePeriod:
-                default: 2m
+                  DollarsLimit is the max cumulative cost, in USD, allowed within the
+                  current period, computed from GPU-hours-by-type (see Query) and the
+                  operator's configured per-GPU-type hourly rates
+                  (--gpu-rate-a100/h100/v100 flags). At least one of
+                  GPUHoursLimit/DollarsLimit must be set; if both are set, whichever is
+                  exceeded first triggers enforcement.
+                type: number
+              gpuHoursLimit:
                 description: |-
-                  GracePeriod is how long usage must remain continuously over GPULimit
-                  before the operator enforces the quota. This absorbs short bursts.
+                  GPUHoursLimit is the max cumulative GPU-hours, summed across all GPU
+                  types, allowed within the current period. At least one of
+                  GPUHoursLimit/DollarsLimit must be set; if both are set, whichever is
+                  exceeded first triggers enforcement.
+                type: number
+              period:
+                description: |-
+                  Period is the calendar-aligned billing cycle the budget resets on.
+                  Daily starts at 00:00 UTC; Weekly starts Monday 00:00 UTC; Monthly
+                  starts on the 1st at 00:00 UTC.
+                enum:
+                - Daily
+                - Weekly
+                - Monthly
                 type: string
               query:
                 description: |-
-                  Query overrides the default PromQL used to compute current GPU usage.
-                  The string "__NAMESPACE__" is substituted with the namespace name.
-                  The query must return a single scalar/vector sample representing the
-                  number of GPUs currently in use by the namespace.
+                  Query overrides the default PromQL used to compute cumulative
+                  GPU-hours consumed since the current period started, broken out by
+                  GPU type. Must return one sample per GPU type, each labeled "gpuType"
+                  with a value matching one of the operator's configured rate keys
+                  (a100, h100, v100 - case-insensitive). The literal strings
+                  "__NAMESPACE__" and "__RANGE__" are substituted with the target
+                  namespace and a PromQL range duration covering "period start to now"
+                  respectively. Override this to change how GPU-hours are attributed -
+                  e.g. switching from reservation-based accounting (the default, which
+                  matches typical GPU-cluster billing: you're charged for what you
+                  reserved, not what you used) to DCGM utilization-based accounting -
+                  without any code or CRD changes.
                 type: string
             required:
-            - gpuLimit
+            - period
             type: object
+            x-kubernetes-validations:
+            - message: at least one of gpuHoursLimit or dollarsLimit must be set
+              rule: has(self.gpuHoursLimit) || has(self.dollarsLimit)
           status:
-            description: GpuQuotaStatus reports the observed GPU usage and any enforcement
-              taken.
+            description: |-
+              GpuQuotaStatus reports cumulative usage for the current period and any
+              enforcement taken.
             properties:
               conditions:
                 description: Conditions represent the latest available observations.
@@ -157,17 +171,21 @@ spec:
                   - type
                   type: object
                 type: array
-              currentUsage:
-                description: CurrentUsage is the most recently observed number of
-                  active GPUs.
-                format: int32
-                type: integer
+              currentPeriodStart:
+                description: CurrentPeriodStart is when the current billing period
+                  began.
+                format: date-time
+                type: string
+              dollarsUsed:
+                description: DollarsUsed is cumulative cost, in USD, so far in the
+                  current period.
+                type: number
               enforcedResources:
                 description: |-
                   EnforcedResources lists workloads currently scaled down/suspended by
-                  this controller and awaiting restoration.
+                  this controller, awaiting a manual restore.
                 items:
-                  description: EnforcementAction records a single action taken against
+                  description: EnforcedResource records a single action taken against
                     a workload.
                   properties:
                     action:
@@ -182,8 +200,7 @@ spec:
                       format: date-time
                       type: string
                     kind:
-                      description: Kind of the affected resource (Deployment, InferenceService,
-                        JobSet).
+                      description: Kind of the affected resource.
                       type: string
                     name:
                       description: Name of the affected resource.
@@ -196,18 +213,34 @@ spec:
                   - name
                   type: object
                 type: array
-              firstViolationTime:
+              gpuHoursByType:
+                description: GPUHoursByType breaks GPUHoursUsed down per GPU type.
+                items:
+                  description: |-
+                    GPUTypeUsage records cumulative GPU-hours consumed by one GPU type in the
+                    current period.
+                  properties:
+                    gpuHours:
+                      type: number
+                    gpuType:
+                      type: string
+                  required:
+                  - gpuHours
+                  - gpuType
+                  type: object
+                type: array
+              gpuHoursUsed:
                 description: |-
-                  FirstViolationTime is when usage was first observed over GPULimit
-                  during the current violation streak. Cleared once compliant again.
-                format: date-time
-                type: string
+                  GPUHoursUsed is cumulative GPU-hours consumed so far in the current
+                  period, summed across all GPU types.
+                type: number
               lastCheckedTime:
                 description: LastCheckedTime is when usage was last queried from Prometheus.
                 format: date-time
                 type: string
               lastEnforcementTime:
-                description: LastEnforcementTime is when enforcement last ran against
+                description: |-
+                  LastEnforcementTime is when enforcement most recently acted against
                   this namespace.
                 format: date-time
                 type: string
@@ -216,7 +249,9 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: Phase is the current compliance state.
+                description: |-
+                  Phase is the current enforcement state. Enforcement is never lifted
+                  automatically - see ResetAnnotation.
                 type: string
             type: object
         type: object

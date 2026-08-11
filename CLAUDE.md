@@ -2,13 +2,17 @@
 
 ## Overview
 
-An operator that lets namespaces opt in to a GPU quota. A namespace creates a
-`GpuQuota` custom resource declaring `spec.gpuLimit` (max concurrently-active
-GPUs). The operator watches real GPU utilization for that namespace via
-Prometheus/`dcgm-exporter` and, when usage sustains above the limit, scales
-down GPU-consuming workloads (`Deployment`, `StatefulSet`, standalone
+An operator that lets namespaces opt in to a cumulative GPU budget over a
+recurring calendar billing period. A namespace creates a `GpuQuota` custom
+resource declaring `spec.period` (`Daily`/`Weekly`/`Monthly`) and at least
+one of `spec.gpuHoursLimit`/`spec.dollarsLimit`. The operator tracks
+cumulative GPU-hours (and, if priced, dollars) consumed since the period
+started via Prometheus and, once either budget is exceeded, scales down
+GPU-consuming workloads (`Deployment`, `StatefulSet`, standalone
 `ReplicaSet`, `JobSet`, standalone `Job`, `InferenceService`, and standalone
-`Pod`) in that namespace until usage falls back under budget.
+`Pod`) in that namespace. Enforcement is **never lifted automatically** -
+only a human clearing the `gpuquota.example.com/reset` annotation restores
+enforced workloads (see below).
 
 ## Architecture
 
@@ -18,24 +22,58 @@ There is no cross-namespace state — each `GpuQuota` is fully independent, so
 multiple teams' quotas can't interfere with each other.
 
 Reconcile pipeline per pass:
-1. Query the single, cluster-wide Prometheus set via `--prometheus-url` -
+1. If `gpuquota.example.com/reset` is set to `"true"`, restore any workloads
+   in `status.enforcedResources`, clear enforcement state, and remove the
+   annotation (`handleManualReset`) - before anything else, so a reset takes
+   effect even if usage is still over budget (in which case the same pass
+   re-enforces below rather than leaving the namespace uncapped).
+2. Compute `periodStart(spec.period, now)` (`controllers/period.go`) -
+   calendar-aligned in UTC, never a rolling window.
+3. Query the single, cluster-wide Prometheus set via `--prometheus-url` -
    there is no per-namespace override of *which* Prometheus is queried
    (only the PromQL run against it is overridable, via `spec.query`). One
-   Prometheus for the whole cluster keeps quotas comparable across
-   namespaces; letting each namespace point at a different backend would
-   make "GPU usage" mean different things depending which `GpuQuota` you're
-   looking at.
-2. Run a PromQL query (`spec.query` override, or `metrics.DefaultQueryTemplate`)
-   against that Prometheus to get the current active-GPU count for the
-   namespace.
-3. Compare against `spec.gpuLimit` and drive a small state machine stored in
-   `status.phase`: `Compliant` -> `Violating` -> `Enforced`, and back to
-   `Compliant` on recovery.
-4. Requeue with `RequeueAfter` tuned to whichever timer is next relevant
-   (check interval, remaining grace period, or remaining cooldown) rather
-   than polling on a single fixed interval — this is why `Reconcile` computes
-   `ctrl.Result{RequeueAfter: ...}` differently in each branch instead of
-   using a periodic `SetupWithManager` resync.
+   Prometheus for the whole cluster keeps budgets comparable across
+   namespaces.
+4. Run a PromQL query (`spec.query` override, or
+   `metrics.DefaultGPUHoursQueryTemplate`) for cumulative GPU-hours consumed
+   since `periodStart`, broken out by GPU type (`gpuType` label per sample).
+5. If `spec.dollarsLimit` is set, price each type via `GPURates.RateFor` -
+   an unpriced type present in usage fails the whole reconcile with
+   `status.phase: Unknown` rather than silently undercounting cost
+   (`computeUsage` in the controller).
+6. Compare `gpuHoursUsed`/`dollarsUsed` against `spec.gpuHoursLimit`/
+   `spec.dollarsLimit` - **whichever limit is exceeded first** triggers
+   enforcement, no grace period (unlike the old instantaneous-threshold
+   design this replaced, a monotonically-increasing cumulative counter
+   can't "spike" and settle back down on its own, so there's no burst to
+   absorb).
+7. If over budget, **or already `Enforced`**, call `EnforceNamespace` again
+   this pass (catching newly created GPU workloads too) and stay/become
+   `Enforced`. Otherwise `Compliant`. There is no code path that transitions
+   `Enforced` -> `Compliant` on its own - only `handleManualReset` (step 1)
+   does that.
+8. Requeue after `spec.checkInterval` (default `5m`) - no per-branch
+   `RequeueAfter` tuning is needed anymore, since there's no grace/cooldown
+   timer to wake up early for.
+
+### Why enforcement only ever escalates, never auto-resolves
+
+This is the single biggest behavioral difference from a typical
+instantaneous-threshold quota controller, and it's a deliberate design
+choice (confirmed with the user), not an oversight:
+
+- Cumulative GPU-hours/dollars **only increase** within a period - there's
+  no "usage dropped back under the limit" event to key an automatic restore
+  off of, the way the old `gpuLimit`-based design could.
+- A new period starting doesn't mean the underlying cost overrun was
+  addressed - it just means the counter reset. Auto-restoring on period
+  rollover would silently let a namespace that blew its budget every single
+  month keep doing so forever with no human ever noticing.
+- So the only trigger is explicit: `gpuquota.example.com/reset=true`. This
+  also means an admin can use it as an "unlock and see what happens" tool
+  after raising a limit - if usage is still over budget post-restore, the
+  reconciler re-enforces in the same pass (see pipeline step 1 above),
+  rather than requiring a second manual step.
 
 ### Authenticating to Prometheus (`metrics/prometheus.go`)
 
@@ -86,34 +124,36 @@ at the exact path `serviceCACertFile` expects. None of this is required for
 a non-OpenShift Prometheus that doesn't sit behind an auth proxy; those two
 manifests are the only OpenShift-specific pieces of the whole operator.
 
-### GPU usage metric
+### GPU-hours accounting (`metrics.DefaultGPUHoursQueryTemplate`)
 
-`metrics.DefaultQueryTemplate` assumes `dcgm-exporter` runs with pod-resource
-mapping enabled, so `DCGM_FI_DEV_GPU_UTIL` samples carry a `namespace` label.
-The default query counts distinct GPU UUIDs reporting `> 0` utilization in
-the namespace — i.e. "GPUs actively in use", not raw utilization percentage
-or `nvidia.com/gpu` *requests*. This was a deliberate choice: quota against
-requests would penalize idle-but-reserved GPUs, and raw utilization percentage
-doesn't map cleanly onto "how many GPUs is this namespace using". A `GpuQuota`
-can override this entirely via `spec.query`, with the literal string
-`__NAMESPACE__` substituted for the target namespace — e.g. to quota on GPU
-memory instead of utilization.
+Defaults to **reservation-based** accounting (`kube_pod_resource_request`
+joined to node GPU-type labels via `kube_node_labels`), not utilization -
+this matches how GPU clusters are typically actually billed (Service
+Units/GPU-hours charged for what was *reserved*, regardless of whether it
+was fully utilized). This was a deliberate reversal from an earlier
+utilization-based design (`DCGM_FI_DEV_GPU_UTIL > 0`) once it became clear
+utilization-based accounting would systematically undercount real billed
+cost for idle-but-reserved GPUs.
 
-### Grace period vs. cooldown period — don't confuse these
+The default query's exact join (`kube_pod_resource_request` × on `node` ×
+`kube_node_labels{label_nvidia_com_gpu_product}`) is a **best-effort
+starting point, not a guarantee** - it assumes kube-state-metrics is
+configured to expose that specific node label (commonly set by NVIDIA's GPU
+Operator / node feature discovery), which is cluster-specific configuration
+this operator has no way to verify. `spec.query` exists specifically so this
+is swappable per-namespace without any code or CRD change - e.g. to switch
+to DCGM utilization-based accounting instead (see
+`samples/team-b-quota-custom-query.yaml` for a worked example query). Any
+override must still return one vector sample per GPU type, labeled
+`gpuType`, with a value matching a rate key (`a100`/`h100`/`v100`,
+case-insensitive) - see `metrics.GPUHoursByType`.
 
-- `spec.gracePeriod`: how long usage must stay *continuously* over
-  `gpuLimit` before enforcement fires. Absorbs short bursts (e.g. a batch job
-  briefly spiking GPU count) without punishing them. Tracked via
-  `status.firstViolationTime`, which is cleared the moment usage drops back
-  under the limit — the streak does not accumulate across separate
-  violations.
-- `spec.cooldownPeriod`: once enforcement *has* fired, the minimum time
-  before it fires again against the same namespace. This exists because
-  after scaling everything to zero, usage will read as compliant on the very
-  next check (nothing is running to use GPUs) — without a cooldown separate
-  from the grace period, a namespace could get re-enforced (and any
-  in-progress restore fought) on every reconcile. `status.lastEnforcementTime`
-  tracks this independently of `firstViolationTime`.
+The GPU-hours-per-type computation itself (`avg_over_time(...) *
+__RANGE_HOURS__` in `BuildGPUHoursQuery`) is deliberately
+resolution-independent: it doesn't assume any particular Prometheus
+scrape/recording interval, unlike a `sum_over_time(...) * step/3600`
+formulation (which is what a typical showback/billing dashboard uses, since
+it usually already knows its own recording-rule interval) would require.
 
 ### Enforcement and restore (`enforce/enforce.go`)
 
@@ -183,13 +223,20 @@ All seven enforcement paths only touch workloads that actually request
 StatefulSet, ReplicaSet, Job, Pod; a generic recursive `scanForGPURequest`
 walk for the unstructured JobSet/InferenceService trees, since GPU requests
 live at different nesting depths across API versions/components). Non-GPU
-workloads in an over-quota namespace are left alone.
+workloads in an over-budget namespace are left alone.
+
+`enforce.go` itself is unaware of budgets/periods entirely - it only knows
+"enforce this namespace" / "restore these previously-enforced resources."
+All of the period/budget/reset logic lives in the controller; `enforce.go`
+is called identically regardless of *why* the controller decided to call it.
 
 Restore is driven entirely by `status.enforcedResources` — the reconciler
 doesn't re-derive "what did I touch" by re-scanning the namespace, it replays
 exactly the list it recorded at enforcement time. `enforce.mergeEnforced`
 dedupes by `kind+name` so repeated enforcement passes (e.g. a new GPU
-workload created after the initial enforcement) append rather than duplicate.
+workload created after the initial enforcement, or the same namespace being
+swept again on a later reconcile while still `Enforced`) append rather than
+duplicate.
 
 ### Optional CRDs
 
@@ -204,7 +251,10 @@ present on any Kubernetes cluster.
 
 - `make manifests` / `make generate` — regenerate `config/crd/*.yaml` and
   `v1alpha1/zz_generated.deepcopy.go` via `controller-gen` (auto-installed to
-  `./bin/controller-gen`, pinned version in the Makefile).
+  `./bin/controller-gen`, pinned version in the Makefile). `manifests` passes
+  `crd:allowDangerousTypes=true`, since `GpuQuotaSpec`/`GpuQuotaStatus` use
+  `float64` for GPU-hours/dollar amounts and controller-gen otherwise refuses
+  float fields (JSON-number precision varies across client languages).
 - `make fmt` / `make vet` / `make test`
 - `make build` / `make run`
 - `make bootstrap` / `make unbootstrap` — **cluster-admin, one-time**: CRD +
@@ -223,11 +273,19 @@ present on any Kubernetes cluster.
 
 ## Code Structure
 
-- `v1alpha1/` — `GpuQuota` CRD Go types, groupversion registration, generated
+- `v1alpha1/` — `GpuQuota` CRD Go types (period/budget spec, cumulative-usage
+  status, `ResetAnnotation` constant), groupversion registration, generated
   deepcopy.
-- `controllers/gpuquota-controller.go` — the reconcile state machine.
-- `metrics/prometheus.go` — Prometheus HTTP API client + default PromQL.
-- `enforce/enforce.go` — scale-down/suspend/restore logic per workload kind.
+- `controllers/gpuquota-controller.go` — the reconcile pipeline: query usage,
+  price it, compare to budget, enforce/hold/restore.
+- `controllers/period.go` — `periodStart`: calendar-aligned (UTC) period
+  boundary calculation for Daily/Weekly/Monthly.
+- `controllers/rates.go` — `GPURates`: the operator-wide `$/GPU-hour` table
+  (`RateFor` treats a zero rate as "unconfigured," not "free").
+- `metrics/prometheus.go` — Prometheus HTTP API client, GPU-hours-by-type
+  query building/parsing, default PromQL.
+- `enforce/enforce.go` — scale-down/suspend/restore logic per workload kind;
+  budget-agnostic (see above).
 - `manager/` — two separate kustomize bases (flat layout within each, not
   kubebuilder's split `config/{manager,rbac,default}` — matches the
   convention used elsewhere in this environment), split by required
@@ -259,14 +317,18 @@ present on any Kubernetes cluster.
   concept and are almost always infra (the NVIDIA device plugin,
   `dcgm-exporter` itself) - scaling/deleting one would break GPU visibility
   or scheduling cluster-wide rather than free up quota.
-- **Blocking new workloads while `Enforced`**: enforcement is purely
-  reactive. Nothing stops a namespace from immediately recreating a new bare
-  Pod/Job the instant an old one is acted on, which would just cause
-  enforce/recreate churn every reconcile. Closing this needs a
-  `ValidatingAdmissionPolicy` or admission webhook rejecting new
-  GPU-requesting objects while `status.phase == Enforced`, which is a
-  materially bigger change (webhook infra, cert management) than adding
-  another workload kind.
+- **Default query's node-label assumption**: `DefaultGPUHoursQueryTemplate`
+  assumes a specific kube-state-metrics node-label allowlist config that
+  varies per cluster (see "GPU-hours accounting" above) - it's a
+  documented starting point, not something guaranteed to work unmodified
+  everywhere.
+
+Note: "blocking new workloads while Enforced" - previously a listed gap in
+the old instantaneous-threshold design - is no longer one: since enforcement
+now persists and re-sweeps the namespace every reconcile once `Enforced`
+(rather than only reacting to a live grace-period violation), any new
+GPU-requesting workload created while already enforced gets caught on the
+very next reconcile.
 
 ## Prerequisites
 
@@ -274,5 +336,8 @@ present on any Kubernetes cluster.
 - `oc`, `kustomize`
 - An OpenShift cluster (the Build API used by `manager/deploy/build.yaml`
   is OpenShift-specific, not vanilla Kubernetes)
-- A cluster with `dcgm-exporter` + Prometheus already scraping GPU metrics
-  with pod/namespace labels attached
+- A Prometheus/Thanos instance with kube-state-metrics exposing
+  `kube_pod_resource_request` and `kube_node_labels` (see "GPU-hours
+  accounting" above) - or a `spec.query` override targeting whatever metrics
+  your cluster actually has, e.g. this operator's own assumed `dcgm-exporter`
+  deployment.

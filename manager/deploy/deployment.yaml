@@ -37,6 +37,12 @@ spec:
         # stack, which requires the cluster-monitoring-view
         # ClusterRoleBinding (../bootstrap/monitoring_rolebinding.yaml).
         - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
+        # $/GPU-hour rates, only required if any GpuQuota sets spec.dollarsLimit
+        # and actually uses that GPU type - REPLACE these placeholder values
+        # with your real rates before relying on dollarsLimit enforcement.
+        - --gpu-rate-a100=1.70
+        - --gpu-rate-h100=1.10
+        - --gpu-rate-v100=0.30
         volumeMounts:
         - name: service-ca
           mountPath: /etc/gpu-quota-operator/service-ca

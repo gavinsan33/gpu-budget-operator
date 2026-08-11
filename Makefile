@@ -30,7 +30,10 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate CRD manifests.
-	$(CONTROLLER_GEN) crd paths="./v1alpha1/..." output:crd:artifacts:config=config/crd
+	# allowDangerousTypes=true: GpuQuotaSpec/Status use float64 for GPU-hours/dollar
+	# amounts (fractional GPU-hours and cents matter here); controller-gen otherwise
+	# refuses float fields since JSON-number precision varies across client languages.
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./v1alpha1/..." output:crd:artifacts:config=config/crd
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

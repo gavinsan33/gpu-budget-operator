@@ -1,5 +1,6 @@
-// Package metrics queries Prometheus (fed by dcgm-exporter) to determine how
-// many GPUs are currently active in a given namespace.
+// Package metrics queries Prometheus to determine cumulative GPU-hours
+// consumed, broken out by GPU type, for a namespace's current billing
+// period.
 package metrics
 
 import (
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,14 +19,39 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// DefaultQueryTemplate counts distinct GPUs (by UUID) reporting non-zero
-// utilization within the namespace. It assumes dcgm-exporter is deployed
-// with pod-resource mapping enabled, so DCGM_FI_DEV_GPU_UTIL samples carry a
-// "namespace" label. __NAMESPACE__ is substituted with the target namespace.
-const DefaultQueryTemplate = `count(max by (UUID) (DCGM_FI_DEV_GPU_UTIL{namespace="__NAMESPACE__"} > 0))`
+// DefaultGPUHoursQueryTemplate computes cumulative GPU-hours consumed by
+// namespace __NAMESPACE__ since the period started (__RANGE__ ago), broken
+// out per GPU type, based on GPU *requests* (reservation time) rather than
+// utilization - matching typical GPU-cluster billing methodology (you're
+// billed for what you reserved, not what you used).
+//
+// This assumes kube-state-metrics exposes kube_pod_resource_request and
+// kube_node_labels with the node's GPU product allow-listed under
+// "nvidia.com/gpu.product" (the label NVIDIA's GPU Operator / node feature
+// discovery commonly sets) - VERIFY this matches your cluster before
+// relying on it, and override via spec.query if not. The GPU-hours
+// computation itself (avg reservation count over the range * range length
+// in hours) is resolution-independent - it doesn't assume any particular
+// Prometheus scrape/recording interval.
+const DefaultGPUHoursQueryTemplate = `label_replace(
+  sum by (product) (
+    avg_over_time(
+      (
+        kube_pod_resource_request{resource=~"nvidia.com/.+", namespace="__NAMESPACE__"}
+        * on(node) group_left(product) label_replace(kube_node_labels, "product", "$1", "label_nvidia_com_gpu_product", "(.+)")
+      )[__RANGE__:5m]
+    )
+  ) * __RANGE_HOURS__,
+  "gpuType", "$1", "product", "NVIDIA-(.+)"
+)`
 
-// namespacePlaceholder is substituted into query templates.
-const namespacePlaceholder = "__NAMESPACE__"
+// namespacePlaceholder, rangePlaceholder, and rangeHoursPlaceholder are
+// substituted into query templates by BuildGPUHoursQuery.
+const (
+	namespacePlaceholder  = "__NAMESPACE__"
+	rangePlaceholder      = "__RANGE__"
+	rangeHoursPlaceholder = "__RANGE_HOURS__"
+)
 
 // Client queries Prometheus for per-namespace GPU usage.
 type Client struct {
@@ -112,36 +139,48 @@ func (t *bearerTokenRoundTripper) RoundTrip(req *http.Request) (*http.Response, 
 	return t.base.RoundTrip(req)
 }
 
-// BuildQuery renders a query template for the given namespace, falling back
-// to DefaultQueryTemplate when template is empty.
-func BuildQuery(template, namespace string) string {
+// BuildGPUHoursQuery renders a GPU-hours-by-type query template for the
+// given namespace and elapsed time since the period started, falling back
+// to DefaultGPUHoursQueryTemplate when template is empty. elapsed is
+// clamped to at least one minute to avoid a degenerate zero-length PromQL
+// range right at a period boundary.
+func BuildGPUHoursQuery(template, namespace string, elapsed time.Duration) string {
 	if template == "" {
-		template = DefaultQueryTemplate
+		template = DefaultGPUHoursQueryTemplate
 	}
-	return strings.ReplaceAll(template, namespacePlaceholder, namespace)
+	if elapsed < time.Minute {
+		elapsed = time.Minute
+	}
+	q := strings.ReplaceAll(template, namespacePlaceholder, namespace)
+	q = strings.ReplaceAll(q, rangePlaceholder, model.Duration(elapsed).String())
+	q = strings.ReplaceAll(q, rangeHoursPlaceholder, strconv.FormatFloat(elapsed.Hours(), 'f', -1, 64))
+	return q
 }
 
-// ActiveGPUCount runs the query and returns the number of active GPUs as
-// reported by the first sample in the result vector. Returns 0 with no error
-// if the query yields no samples (i.e. no GPU activity in the namespace).
-func (c *Client) ActiveGPUCount(ctx context.Context, query string) (int32, error) {
+// GPUHoursByType runs query and returns cumulative GPU-hours consumed so
+// far, keyed by the "gpuType" label of each result sample. Samples with no
+// "gpuType" label are skipped, since there's no rate to attribute them to.
+func (c *Client) GPUHoursByType(ctx context.Context, query string) (map[string]float64, error) {
 	value, warnings, err := c.api.Query(ctx, query, time.Now())
 	if err != nil {
-		return 0, fmt.Errorf("querying prometheus: %w", err)
+		return nil, fmt.Errorf("querying prometheus: %w", err)
 	}
 	for _, w := range warnings {
 		_ = w // surfaced via logging by the caller if desired
 	}
 
-	switch v := value.(type) {
-	case model.Vector:
-		if len(v) == 0 {
-			return 0, nil
-		}
-		return int32(v[0].Value), nil
-	case *model.Scalar:
-		return int32(v.Value), nil
-	default:
-		return 0, fmt.Errorf("unexpected prometheus result type %T for query %q", value, query)
+	vector, ok := value.(model.Vector)
+	if !ok {
+		return nil, fmt.Errorf("unexpected prometheus result type %T for query %q (expected vector)", value, query)
 	}
+
+	hoursByType := make(map[string]float64, len(vector))
+	for _, sample := range vector {
+		gpuType := string(sample.Metric["gpuType"])
+		if gpuType == "" {
+			continue
+		}
+		hoursByType[gpuType] += float64(sample.Value)
+	}
+	return hoursByType, nil
 }

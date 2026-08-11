@@ -3,6 +3,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,10 +22,11 @@ import (
 
 const readyCondition = "Ready"
 
-// GpuQuotaReconciler watches GpuQuota custom resources, evaluates current
-// GPU usage for the namespace they live in against Prometheus, and enforces
-// the configured limit by scaling down or suspending GPU-consuming
-// workloads.
+// GpuQuotaReconciler watches GpuQuota custom resources, evaluates cumulative
+// GPU-hours/dollars consumed by the namespace they live in during the
+// current billing period against Prometheus, and enforces the configured
+// budget by scaling down or suspending GPU-consuming workloads. Enforcement
+// is never lifted automatically - see gpuquotav1alpha1.ResetAnnotation.
 type GpuQuotaReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -34,6 +37,10 @@ type GpuQuotaReconciler struct {
 	// splitting GPU accounting across multiple Prometheus instances would
 	// make quotas impossible to compare or reason about cluster-wide.
 	PrometheusURL string
+
+	// GPURates is the operator-wide $/GPU-hour rate table used to compute
+	// spec.dollarsLimit compliance.
+	GPURates GPURates
 
 	// Enforcer performs the actual scale-down/suspend/restore operations.
 	// Defaults to &enforce.Enforcer{Client: r.Client} on first use if nil.
@@ -63,101 +70,113 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if gq.Annotations[gpuquotav1alpha1.ResetAnnotation] == "true" {
+		if err := r.handleManualReset(ctx, &gq); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	promClient, err := r.prometheusClient()
 	if err != nil {
 		return r.markFailed(ctx, &gq, "PrometheusClientError", err)
 	}
 
-	query := metrics.BuildQuery(gq.Spec.Query, gq.Namespace)
-	usage, err := promClient.ActiveGPUCount(ctx, query)
+	now := time.Now().UTC()
+	start := periodStart(gq.Spec.Period, now)
+
+	query := metrics.BuildGPUHoursQuery(gq.Spec.Query, gq.Namespace, now.Sub(start))
+	hoursByType, err := promClient.GPUHoursByType(ctx, query)
 	if err != nil {
 		return r.markFailed(ctx, &gq, "MetricsQueryFailed", err)
 	}
 
-	now := metav1.Now()
-	gq.Status.CurrentUsage = usage
-	gq.Status.LastCheckedTime = &now
+	totalHours, totalDollars, usageByType, err := r.computeUsage(hoursByType, gq.Spec.DollarsLimit != nil, gq.Namespace)
+	if err != nil {
+		return r.markFailed(ctx, &gq, "UnpricedGPUType", err)
+	}
+
+	nowMeta := metav1.NewTime(now)
+	startMeta := metav1.NewTime(start)
+	gq.Status.CurrentPeriodStart = &startMeta
+	gq.Status.GPUHoursUsed = totalHours
+	gq.Status.GPUHoursByType = usageByType
+	gq.Status.DollarsUsed = totalDollars
+	gq.Status.LastCheckedTime = &nowMeta
 	gq.Status.ObservedGeneration = gq.Generation
 
-	var result ctrl.Result
-	if usage <= gq.Spec.GPULimit {
-		result, err = r.reconcileCompliant(ctx, &gq, now)
+	overBudget := (gq.Spec.GPUHoursLimit != nil && totalHours > *gq.Spec.GPUHoursLimit) ||
+		(gq.Spec.DollarsLimit != nil && totalDollars > *gq.Spec.DollarsLimit)
+
+	if overBudget || gq.Status.Phase == gpuquotav1alpha1.PhaseEnforced {
+		enforced, err := r.enforcer().EnforceNamespace(ctx, gq.Namespace)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("enforcing quota in namespace %s: %w", gq.Namespace, err)
+		}
+		gq.Status.EnforcedResources = mergeEnforced(gq.Status.EnforcedResources, enforced)
+		if len(enforced) > 0 {
+			gq.Status.LastEnforcementTime = &nowMeta
+		}
+		gq.Status.Phase = gpuquotav1alpha1.PhaseEnforced
 	} else {
-		result, err = r.reconcileViolating(ctx, &gq, now)
-	}
-	if err != nil {
-		return ctrl.Result{}, err
+		gq.Status.Phase = gpuquotav1alpha1.PhaseCompliant
 	}
 
 	apimeta.SetStatusCondition(&gq.Status.Conditions, metav1.Condition{
 		Type:    readyCondition,
 		Status:  metav1.ConditionTrue,
-		Reason:  "MetricsEvaluated",
-		Message: fmt.Sprintf("usage=%d limit=%d phase=%s", usage, gq.Spec.GPULimit, gq.Status.Phase),
+		Reason:  "UsageEvaluated",
+		Message: fmt.Sprintf("gpuHours=%.2f dollars=%.2f phase=%s", totalHours, totalDollars, gq.Status.Phase),
 	})
 	if err := r.Status().Update(ctx, &gq); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status for %s/%s: %w", gq.Namespace, gq.Name, err)
 	}
 
-	logger.V(1).Info("reconciled GpuQuota", "namespace", gq.Namespace, "usage", usage, "limit", gq.Spec.GPULimit, "phase", gq.Status.Phase)
-	return result, nil
+	logger.V(1).Info("reconciled GpuQuota", "namespace", gq.Namespace, "gpuHours", totalHours, "dollars", totalDollars, "phase", gq.Status.Phase)
+	return ctrl.Result{RequeueAfter: durationOrDefault(gq.Spec.CheckInterval.Duration, 5*time.Minute)}, nil
 }
 
-// reconcileCompliant handles the case where usage is within budget: it
-// clears any violation streak and, if AutoRestore is set, restores workloads
-// previously scaled down by a prior enforcement.
-func (r *GpuQuotaReconciler) reconcileCompliant(ctx context.Context, gq *gpuquotav1alpha1.GpuQuota, now metav1.Time) (ctrl.Result, error) {
-	gq.Status.FirstViolationTime = nil
-
-	if gq.Status.Phase == gpuquotav1alpha1.PhaseEnforced && gq.Spec.AutoRestore && len(gq.Status.EnforcedResources) > 0 {
-		if err := r.enforcer().RestoreNamespace(ctx, gq.Namespace, gq.Status.EnforcedResources); err != nil {
-			return ctrl.Result{}, fmt.Errorf("restoring namespace %s: %w", gq.Namespace, err)
+// computeUsage totals GPU-hours across all types and, if needsDollars,
+// prices each type via r.GPURates - returning an error naming the first
+// unpriced GPU type found, so a misconfigured dollarsLimit fails loudly
+// rather than silently undercounting cost.
+func (r *GpuQuotaReconciler) computeUsage(hoursByType map[string]float64, needsDollars bool, namespace string) (totalHours, totalDollars float64, usage []gpuquotav1alpha1.GPUTypeUsage, err error) {
+	usage = make([]gpuquotav1alpha1.GPUTypeUsage, 0, len(hoursByType))
+	for gpuType, hours := range hoursByType {
+		totalHours += hours
+		usage = append(usage, gpuquotav1alpha1.GPUTypeUsage{GPUType: gpuType, GPUHours: hours})
+		if needsDollars {
+			rate, ok := r.GPURates.RateFor(gpuType)
+			if !ok {
+				return 0, 0, nil, fmt.Errorf("namespace %s used unpriced GPU type %q: set the operator's --gpu-rate-%s flag", namespace, gpuType, strings.ToLower(gpuType))
+			}
+			totalDollars += hours * rate
 		}
-		gq.Status.EnforcedResources = nil
 	}
+	sort.Slice(usage, func(i, j int) bool { return usage[i].GPUType < usage[j].GPUType })
+	return totalHours, totalDollars, usage, nil
+}
+
+// handleManualReset restores any workloads previously enforced against gq's
+// namespace, clears enforcement status, and removes the reset annotation -
+// the only way enforcement is ever lifted (see gpuquotav1alpha1.ResetAnnotation).
+func (r *GpuQuotaReconciler) handleManualReset(ctx context.Context, gq *gpuquotav1alpha1.GpuQuota) error {
+	if err := r.enforcer().RestoreNamespace(ctx, gq.Namespace, gq.Status.EnforcedResources); err != nil {
+		return fmt.Errorf("restoring namespace %s during manual reset: %w", gq.Namespace, err)
+	}
+	delete(gq.Annotations, gpuquotav1alpha1.ResetAnnotation)
+	if err := r.Update(ctx, gq); err != nil {
+		return fmt.Errorf("clearing reset annotation for %s/%s: %w", gq.Namespace, gq.Name, err)
+	}
+	// A regular Update() never touches the status subresource, but its
+	// response still repopulates gq in place with whatever the server has
+	// stored for .status - the pre-reset enforcement state. Set it fresh
+	// again here so the rest of Reconcile (and the eventual
+	// r.Status().Update() at the end of it) sees post-reset state, not
+	// this now-stale copy.
+	gq.Status.EnforcedResources = nil
 	gq.Status.Phase = gpuquotav1alpha1.PhaseCompliant
-
-	return ctrl.Result{RequeueAfter: durationOrDefault(gq.Spec.CheckInterval.Duration, time.Minute)}, nil
-}
-
-// reconcileViolating handles the case where usage exceeds the configured
-// limit: it tracks how long the violation has persisted, waits out the
-// grace period, then enforces (subject to the cooldown between successive
-// enforcement actions on the same namespace).
-func (r *GpuQuotaReconciler) reconcileViolating(ctx context.Context, gq *gpuquotav1alpha1.GpuQuota, now metav1.Time) (ctrl.Result, error) {
-	gracePeriod := durationOrDefault(gq.Spec.GracePeriod.Duration, 2*time.Minute)
-	cooldownPeriod := durationOrDefault(gq.Spec.CooldownPeriod.Duration, 5*time.Minute)
-	checkInterval := durationOrDefault(gq.Spec.CheckInterval.Duration, time.Minute)
-
-	if gq.Status.FirstViolationTime == nil {
-		gq.Status.FirstViolationTime = &now
-		gq.Status.Phase = gpuquotav1alpha1.PhaseViolating
-		return ctrl.Result{RequeueAfter: minDuration(gracePeriod, checkInterval)}, nil
-	}
-
-	violatingFor := now.Sub(gq.Status.FirstViolationTime.Time)
-	if violatingFor < gracePeriod {
-		gq.Status.Phase = gpuquotav1alpha1.PhaseViolating
-		return ctrl.Result{RequeueAfter: gracePeriod - violatingFor}, nil
-	}
-
-	if gq.Status.LastEnforcementTime != nil {
-		sinceLast := now.Sub(gq.Status.LastEnforcementTime.Time)
-		if sinceLast < cooldownPeriod {
-			gq.Status.Phase = gpuquotav1alpha1.PhaseEnforced
-			return ctrl.Result{RequeueAfter: cooldownPeriod - sinceLast}, nil
-		}
-	}
-
-	enforced, err := r.enforcer().EnforceNamespace(ctx, gq.Namespace)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("enforcing quota in namespace %s: %w", gq.Namespace, err)
-	}
-	gq.Status.EnforcedResources = mergeEnforced(gq.Status.EnforcedResources, enforced)
-	gq.Status.LastEnforcementTime = &now
-	gq.Status.Phase = gpuquotav1alpha1.PhaseEnforced
-
-	return ctrl.Result{RequeueAfter: checkInterval}, nil
+	gq.Status.LastEnforcementTime = nil
+	return nil
 }
 
 func (r *GpuQuotaReconciler) markFailed(ctx context.Context, gq *gpuquotav1alpha1.GpuQuota, reason string, cause error) (ctrl.Result, error) {
@@ -221,13 +240,6 @@ func durationOrDefault(d, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
-}
-
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // SetupWithManager wires the reconciler into the manager.

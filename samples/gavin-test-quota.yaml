@@ -4,8 +4,6 @@ metadata:
   name: gavin-test-quota
   namespace: gavin-test
 spec:
-  gpuLimit: 4
-  checkInterval: 1m
-  gracePeriod: 2m
-  cooldownPeriod: 5m
-  autoRestore: true
+  period: Monthly
+  gpuHoursLimit: 500
+  checkInterval: 5m

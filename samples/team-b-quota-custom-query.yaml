@@ -4,12 +4,22 @@ metadata:
   name: team-b-quota
   namespace: team-b
 spec:
-  gpuLimit: 8
-  # Override the default query, e.g. to weight by GPU memory instead of util.
-  # (Every GpuQuota is evaluated against the same operator-wide Prometheus -
-  # see --prometheus-url - only the query itself is overridable per-namespace.)
-  query: 'count(max by (UUID) (DCGM_FI_DEV_GPU_UTIL{namespace="__NAMESPACE__"} > 0))'
-  checkInterval: 30s
-  gracePeriod: 1m
-  cooldownPeriod: 10m
-  autoRestore: false
+  period: Weekly
+  gpuHoursLimit: 200
+  # Cap on cost too - whichever of gpuHoursLimit/dollarsLimit is exceeded
+  # first triggers enforcement. Requires the operator's --gpu-rate-* flags
+  # to price every GPU type this namespace actually uses.
+  dollarsLimit: 5000
+  # Override the default reservation-based accounting query, e.g. to switch
+  # to DCGM utilization-based GPU-hours instead. Must return one sample per
+  # GPU type, labeled "gpuType". (Every GpuQuota is evaluated against the
+  # same operator-wide Prometheus - see --prometheus-url - only the query
+  # itself is overridable per-namespace.)
+  query: |
+    label_replace(
+      sum by (modelName) (
+        avg_over_time(DCGM_FI_DEV_GPU_UTIL{exported_namespace="__NAMESPACE__"}[__RANGE__]) / 100
+      ) * __RANGE_HOURS__,
+      "gpuType", "$1", "modelName", "NVIDIA-(.+)"
+    )
+  checkInterval: 5m
