@@ -18,7 +18,12 @@ spec:
       serviceAccountName: gpu-quota-operator-controller-manager
       containers:
       - name: manager
-        image: gpu-quota-operator:latest
+        # Resolves to whatever manager/build.yaml's BuildConfig most recently
+        # built into this ImageStreamTag - see the Makefile's `build-image`
+        # target. `oc rollout restart` after a build is required to actually
+        # pick up a new image, since plain apps/v1 Deployments (unlike
+        # DeploymentConfigs) have no ImageChange trigger of their own.
+        image: image-registry.openshift-image-registry.svc:5000/gpu-quota-operator-system/gpu-quota-operator:latest
         imagePullPolicy: Always
         command:
         - /manager

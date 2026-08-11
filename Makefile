@@ -1,10 +1,9 @@
-REGISTRY ?= quay.io
-QUAY_USER ?= gsanders
+# The operator image is built in-cluster from source by the BuildConfig in
+# manager/build.yaml, not locally with docker - see the `build-image` and
+# `deploy` targets below. IMAGE_NAMESPACE/IMAGE_NAME must match
+# manager/namespace.yaml and manager/build.yaml's BuildConfig/ImageStream name.
+IMAGE_NAMESPACE ?= gpu-quota-operator-system
 IMAGE_NAME ?= gpu-quota-operator
-TAG ?= latest
-
-# Image URL to use all building/pushing image targets
-IMG ?= $(REGISTRY)/$(QUAY_USER)/$(IMAGE_NAME):$(TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -58,14 +57,6 @@ build: fmt vet ## Build manager binary.
 run: fmt vet ## Run from your host (requires cluster access).
 	go run ./main.go
 
-.PHONY: docker-build
-docker-build: ## Build docker image.
-	docker build -t ${IMG} .
-
-.PHONY: docker-push
-docker-push: ## Push docker image.
-	docker push ${IMG}
-
 ##@ Deployment
 
 .PHONY: install
@@ -76,15 +67,25 @@ install: manifests ## Install CRDs into the cluster.
 uninstall: manifests ## Uninstall CRDs from the cluster.
 	oc delete -f config/crd/
 
+.PHONY: build-image
+build-image: ## Trigger (or wait on) an in-cluster build of the operator image via manager/build.yaml's BuildConfig.
+	@if oc get build/$(IMAGE_NAME)-1 -n $(IMAGE_NAMESPACE) >/dev/null 2>&1; then \
+		echo "initial build already auto-triggered by the BuildConfig's ConfigChange trigger - waiting on it instead of starting a redundant one"; \
+		oc wait --for=condition=Complete build/$(IMAGE_NAME)-1 -n $(IMAGE_NAMESPACE) --timeout=300s; \
+	else \
+		oc start-build $(IMAGE_NAME) -n $(IMAGE_NAMESPACE) --wait; \
+	fi
+
 .PHONY: deploy
-deploy: manifests ## Deploy controller to the cluster.
-	cd manager && \
-	kustomize edit set image gpu-quota-operator=${IMG} && \
-	oc apply -k .
+deploy: manifests ## Deploy controller to the cluster: apply manifests, build the image in-cluster, then roll out.
+	oc apply -k manager/
+	$(MAKE) build-image
+	oc rollout restart deployment/$(IMAGE_NAME)-controller-manager -n $(IMAGE_NAMESPACE)
+	oc rollout status deployment/$(IMAGE_NAME)-controller-manager -n $(IMAGE_NAMESPACE) --timeout=120s
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the cluster.
-	cd manager && oc delete -k .
+	oc delete -k manager/
 
 ##@ Build Dependencies
 

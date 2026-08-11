@@ -79,6 +79,12 @@ override.
 ## Requirements
 
 - Go 1.26+
+- An OpenShift cluster — `manager/build.yaml` builds the operator image
+  in-cluster via OpenShift's Build API (`BuildConfig`/`ImageStream`), so no
+  local Docker install or external registry is needed, but this specific
+  build mechanism won't work on vanilla Kubernetes (swap it for a plain
+  `docker build`/`docker push` + an `images:` kustomize override if you need
+  that).
 - A Prometheus (or Thanos) instance in-cluster that scrapes `dcgm-exporter`
   with pod-resource mapping enabled, so `DCGM_FI_DEV_GPU_UTIL` samples carry
   `namespace`/`pod` labels.
@@ -87,8 +93,9 @@ override.
   "Prometheus authentication" below for the RBAC/token/TLS pieces required.
 - Optional: [JobSet](https://github.com/kubernetes-sigs/jobset) and
   [KServe](https://github.com/kserve/kserve) CRDs installed, if you want
-  those workload types enforced (Deployments always work; the operator skips
-  JobSet/InferenceService enforcement if their CRDs aren't installed).
+  those workload types enforced (Deployment/StatefulSet/ReplicaSet/Job/Pod
+  enforcement always works; the operator skips JobSet/InferenceService
+  enforcement if their CRDs aren't installed).
 
 ## How it works
 
@@ -189,13 +196,17 @@ the system trust store handles that automatically.
    `manager/deployment.yaml`'s `--default-prometheus-url` flag (or override
    per-namespace via `spec.prometheusURL` on individual `GpuQuota`s) — see
    "Prometheus authentication" above for what else needs to match.
-2. `make manifests` — regenerate the CRD from the Go types.
-3. `make test` — run unit tests.
-4. `make docker-build IMAGE_NAME=... QUAY_USER=...` and
-   `make docker-push IMAGE_NAME=... QUAY_USER=...` — build and push the
-   operator image.
+2. Update `manager/build.yaml`'s `spec.source.git.uri`/`ref` to point at
+   this repo's actual remote once it has one (it's a placeholder pointing at
+   the `go.mod` module path).
+3. `make manifests` — regenerate the CRD from the Go types.
+4. `make test` — run unit tests.
 5. `make install` — install the `GpuQuota` CRD.
-6. `make deploy IMG=<your image>` — deploy the operator.
+6. `make deploy` — applies `manager/` (including the `BuildConfig`/
+   `ImageStream`), builds the operator image in-cluster from git source, and
+   rolls out the result. No local Docker install or external registry
+   needed — see `make build-image` in the Makefile if you just want to
+   rebuild without a full redeploy.
 7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
    `oc apply -f samples/gavin-test-quota.yaml`.
 

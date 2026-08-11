@@ -1,0 +1,31 @@
+# Builds the operator image in-cluster from source via OpenShift's Build API,
+# instead of a local `docker build`/`docker push` to an external registry.
+# Update spec.source.git.uri/ref once this repo has a real remote - this
+# placeholder points at the module path in go.mod.
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: gpu-quota-operator
+  namespace: gpu-quota-operator-system
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: gpu-quota-operator
+  namespace: gpu-quota-operator-system
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/gsanders/gpu-quota-operator.git
+      ref: master
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: gpu-quota-operator:latest
+  triggers:
+  - type: ConfigChange

@@ -195,10 +195,14 @@ present on any Kubernetes cluster.
   `./bin/controller-gen`, pinned version in the Makefile).
 - `make fmt` / `make vet` / `make test`
 - `make build` / `make run`
-- `make docker-build` / `make docker-push`
 - `make install` / `make uninstall` — CRD only
-- `make deploy` / `make undeploy` — operator deployment via `manager/`
-  kustomize base (`cd manager && kustomize edit set image ...`)
+- `make build-image` — trigger (or wait on) an in-cluster image build via
+  manager/build.yaml's BuildConfig; run standalone to rebuild without a full
+  redeploy
+- `make deploy` / `make undeploy` — apply the `manager/` kustomize base,
+  build the image in-cluster, then `oc rollout restart` (a plain
+  `apps/v1` Deployment has no ImageChange trigger, so a manual restart is
+  required to actually pick up a freshly built image)
 
 ## Code Structure
 
@@ -210,6 +214,12 @@ present on any Kubernetes cluster.
 - `manager/` — kustomize base for the operator's own namespace/SA/RBAC/Deployment
   (flat layout, not kubebuilder's split `config/{manager,rbac,default}` —
   matches the convention used elsewhere in this environment).
+  `manager/build.yaml` holds the `ImageStream`/`BuildConfig` that build the
+  operator image in-cluster from git source (OpenShift's Build API) rather
+  than via local `docker build`/`docker push` to an external registry -
+  `manager/deployment.yaml`'s image field points directly at the resulting
+  ImageStreamTag via the internal registry service DNS
+  (`image-registry.openshift-image-registry.svc:5000/...`).
 - `config/crd/` — generated CRD manifest only.
 - `samples/` — example `GpuQuota` CRs.
 
@@ -238,7 +248,8 @@ present on any Kubernetes cluster.
 ## Prerequisites
 
 - Go 1.26+
-- Docker
 - `oc`, `kustomize`
+- An OpenShift cluster (the Build API used by `manager/build.yaml` is
+  OpenShift-specific, not vanilla Kubernetes)
 - A cluster with `dcgm-exporter` + Prometheus already scraping GPU metrics
   with pod/namespace labels attached

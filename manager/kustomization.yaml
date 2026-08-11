@@ -8,9 +8,5 @@ resources:
 - role_binding.yaml
 - monitoring_rolebinding.yaml
 - service-ca-configmap.yaml
+- build.yaml
 - deployment.yaml
-
-images:
-- name: gpu-quota-operator
-  newName: quay.io/gsanders/gpu-quota-operator
-  newTag: latest
