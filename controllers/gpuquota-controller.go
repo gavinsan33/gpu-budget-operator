@@ -132,7 +132,7 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	logger.V(1).Info("reconciled GpuQuota", "namespace", gq.Namespace, "gpuHours", totalHours, "dollars", totalDollars, "phase", gq.Status.Phase)
-	return ctrl.Result{RequeueAfter: durationOrDefault(gq.Spec.CheckInterval.Duration, 5*time.Minute)}, nil
+	return ctrl.Result{RequeueAfter: durationOrDefault(gq.Spec.CheckInterval.Duration, 15*time.Minute)}, nil
 }
 
 // computeUsage totals GPU-hours across all types and, if needsDollars,

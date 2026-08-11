@@ -33,7 +33,7 @@ independently against the same namespace's workloads.
 | `gpuHoursLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative GPU-hours, summed across all GPU types, allowed within the current period. |
 | `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the operator's `--gpu-rate-a100`/`--gpu-rate-h100`/`--gpu-rate-v100` flags. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
 | `query` | string | reservation-based default (see below) | Overrides the PromQL used to compute cumulative GPU-hours consumed since the period started, broken out by GPU type. Must return one sample per GPU type, each labeled `gpuType` with a value matching a rate key (`a100`/`h100`/`v100`, case-insensitive). `__NAMESPACE__`, `__RANGE__`, and `__RANGE_HOURS__` are substituted with the namespace, a PromQL range duration, and that same range as a plain hour count, respectively. Override this to switch accounting methodologies (e.g. DCGM utilization-based instead of reservation-based) without any code or CRD change — see `samples/team-b-quota-custom-query.yaml`. |
-| `checkInterval` | duration | `5m` | How often cumulative usage is re-evaluated. |
+| `checkInterval` | duration | `15m` | How often cumulative usage is re-evaluated. Defaults to 15m to match typical GPU-cluster billing granularity - checking more often than billing itself updates doesn't surface anything new. |
 
 ### status fields
 
@@ -60,7 +60,7 @@ metadata:
 spec:
   period: Monthly       # resets on the 1st of the month, 00:00 UTC
   gpuHoursLimit: 500    # at most 500 cumulative GPU-hours this month
-  checkInterval: 5m
+  checkInterval: 15m
 status:
   currentPeriodStart: "2026-08-01T00:00:00Z"
   gpuHoursUsed: 612.4

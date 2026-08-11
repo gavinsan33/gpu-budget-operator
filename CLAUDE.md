@@ -52,7 +52,7 @@ Reconcile pipeline per pass:
    `Enforced`. Otherwise `Compliant`. There is no code path that transitions
    `Enforced` -> `Compliant` on its own - only `handleManualReset` (step 1)
    does that.
-8. Requeue after `spec.checkInterval` (default `5m`) - no per-branch
+8. Requeue after `spec.checkInterval` (default `15m`, matching typical GPU-cluster billing granularity) - no per-branch
    `RequeueAfter` tuning is needed anymore, since there's no grace/cooldown
    timer to wake up early for.
 

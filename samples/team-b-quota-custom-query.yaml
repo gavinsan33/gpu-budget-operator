@@ -22,4 +22,4 @@ spec:
       ) * __RANGE_HOURS__,
       "gpuType", "$1", "modelName", "NVIDIA-(.+)"
     )
-  checkInterval: 5m
+  checkInterval: 15m

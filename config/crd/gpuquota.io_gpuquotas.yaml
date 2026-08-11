@@ -59,8 +59,11 @@ spec:
               GpuQuota lives in, over a recurring calendar period.
             properties:
               checkInterval:
-                default: 5m
-                description: CheckInterval is how often cumulative usage is re-evaluated.
+                default: 15m
+                description: |-
+                  CheckInterval is how often cumulative usage is re-evaluated. Defaults
+                  to 15m to match typical GPU-cluster billing granularity - checking
+                  more often than billing itself updates doesn't surface anything new.
                 type: string
               dollarsLimit:
                 description: |-

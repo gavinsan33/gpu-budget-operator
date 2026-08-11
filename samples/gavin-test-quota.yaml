@@ -6,4 +6,4 @@ metadata:
 spec:
   period: Monthly
   gpuHoursLimit: 500
-  checkInterval: 5m
+  checkInterval: 15m

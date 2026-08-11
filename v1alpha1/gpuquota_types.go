@@ -66,9 +66,11 @@ type GpuQuotaSpec struct {
 	// +optional
 	Query string `json:"query,omitempty"`
 
-	// CheckInterval is how often cumulative usage is re-evaluated.
+	// CheckInterval is how often cumulative usage is re-evaluated. Defaults
+	// to 15m to match typical GPU-cluster billing granularity - checking
+	// more often than billing itself updates doesn't surface anything new.
 	// +optional
-	// +kubebuilder:default="5m"
+	// +kubebuilder:default="15m"
 	CheckInterval metav1.Duration `json:"checkInterval,omitempty"`
 }
 
