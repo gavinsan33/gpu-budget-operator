@@ -33,11 +33,19 @@ import (
 // computation itself (avg reservation count over the range * range length
 // in hours) is resolution-independent - it doesn't assume any particular
 // Prometheus scrape/recording interval.
+//
+// Uses "exported_namespace" rather than a plain "namespace" label: this
+// operator's target Prometheus is scraped through an ACM-hub-style
+// federation layer that relabels every metric's own namespace/pod labels
+// to exported_namespace/exported_pod, reserving the plain "namespace" label
+// for hub-side routing metadata instead. If your Prometheus isn't behind
+// that kind of federation, override via spec.query with a plain
+// "namespace" label instead.
 const DefaultGPUHoursQueryTemplate = `label_replace(
   sum by (product) (
     avg_over_time(
       (
-        kube_pod_resource_request{resource=~"nvidia.com/.+", namespace="__NAMESPACE__"}
+        kube_pod_resource_request{resource=~"nvidia.com/.+", exported_namespace="__NAMESPACE__"}
         * on(node) group_left(product) label_replace(kube_node_labels, "product", "$1", "label_nvidia_com_gpu_product", "(.+)")
       )[__RANGE__:5m]
     )

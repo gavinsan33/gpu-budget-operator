@@ -110,11 +110,14 @@ clean slate to try again (e.g. after raising the limit).
   you need that).
 - A Prometheus (or Thanos) instance in-cluster. The default accounting query
   assumes kube-state-metrics exposes `kube_pod_resource_request` and
-  `kube_node_labels` with the node's GPU product allow-listed under
-  `nvidia.com/gpu.product` — **verify this matches your cluster** and
-  override `spec.query` if not (e.g. to use DCGM metrics instead, which this
+  `kube_node_labels` (with the node's GPU product allow-listed under
+  `nvidia.com/gpu.product`), scraped through an ACM-hub-style federation
+  layer that relabels each metric's own namespace label to
+  `exported_namespace` — **verify this matches your cluster** and override
+  `spec.query` if not (e.g. to use DCGM metrics instead, which this
   operator already assumes are present for its own `dcgm-exporter`-fed
-  monitoring elsewhere).
+  monitoring elsewhere, or to use a plain `namespace` label if you're not
+  behind that kind of federation).
 - `oc`, `kustomize`
 - If targeting OpenShift's built-in monitoring (the `manager/deploy`
   default): see "Prometheus authentication" below for the RBAC/token/TLS

@@ -140,7 +140,13 @@ The default query's exact join (`kube_pod_resource_request` × on `node` ×
 starting point, not a guarantee** - it assumes kube-state-metrics is
 configured to expose that specific node label (commonly set by NVIDIA's GPU
 Operator / node feature discovery), which is cluster-specific configuration
-this operator has no way to verify. `spec.query` exists specifically so this
+this operator has no way to verify. It also filters on `exported_namespace`
+rather than a plain `namespace` label, since the target Prometheus sits
+behind an ACM-hub-style federation layer that relabels every metric's own
+namespace/pod labels to `exported_namespace`/`exported_pod` (reserving
+plain `namespace` for hub-side routing metadata) - if your Prometheus isn't
+behind that kind of federation, override `spec.query` with a plain
+`namespace` label instead. `spec.query` exists specifically so any of this
 is swappable per-namespace without any code or CRD change - e.g. to switch
 to DCGM utilization-based accounting instead (see
 `samples/team-b-quota-custom-query.yaml` for a worked example query). Any
