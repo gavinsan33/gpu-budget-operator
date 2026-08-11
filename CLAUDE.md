@@ -147,7 +147,7 @@ none of them share a common scaling API:
   CronJob's child Job is skipped - suspending the JobSet already covers its
   Jobs, and a CronJob's Job is a single scheduled run that isn't yet handled
   (see "Known gaps" below). Only a *standalone* Job (created directly, e.g.
-  via `kubectl create job` or a one-off training script) needs this path.
+  via `oc create job` or a one-off training script) needs this path.
 - **Pod** (typed `corev1`, vendored), but only Pods with **no
   `ownerReferences` at all**: deleted outright via `client.Delete`. A bare
   Pod has no scale-to-zero or suspend field, so deletion is the only lever
@@ -239,6 +239,6 @@ present on any Kubernetes cluster.
 
 - Go 1.26+
 - Docker
-- `kubectl`, `kustomize`
+- `oc`, `kustomize`
 - A cluster with `dcgm-exporter` + Prometheus already scraping GPU metrics
   with pod/namespace labels attached

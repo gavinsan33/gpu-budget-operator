@@ -594,7 +594,7 @@ func (e *Enforcer) restoreInferenceService(ctx context.Context, namespace, name 
 }
 
 // enforcePods deletes standalone GPU Pods in the namespace: Pods with no
-// controller owner reference at all (e.g. created directly via `kubectl run`
+// controller owner reference at all (e.g. created directly via `oc run`
 // or a bare manifest, not by a Deployment/JobSet/InferenceService/anything
 // else). Pods owned by something are left alone here - either their owner is
 // one of the kinds already handled above (in which case scaling/suspending

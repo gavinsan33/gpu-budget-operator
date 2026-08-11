@@ -82,7 +82,7 @@ override.
 - A Prometheus (or Thanos) instance in-cluster that scrapes `dcgm-exporter`
   with pod-resource mapping enabled, so `DCGM_FI_DEV_GPU_UTIL` samples carry
   `namespace`/`pod` labels.
-- `kubectl`, `kustomize`
+- `oc`, `kustomize`
 - If targeting OpenShift's built-in monitoring (the `manager/` default): see
   "Prometheus authentication" below for the RBAC/token/TLS pieces required.
 - Optional: [JobSet](https://github.com/kubernetes-sigs/jobset) and
@@ -136,7 +136,7 @@ ReplicaSet, a Job, a KServe component, etc.), are left alone — only the
 owning resource is enforced, since acting on the child directly would either
 be redundant or get immediately undone/recreated by its controller. Only
 truly standalone ReplicaSets/Jobs/Pods (no `ownerReferences` at all — e.g.
-created via `kubectl create replicaset`/`kubectl create job`/`kubectl run`
+created via `oc create replicaset`/`oc create job`/`oc run`
 or a bare manifest) are acted on directly, because that's the only case
 where nothing else is enforcing them.
 Every action above is undone automatically once the namespace's usage drops
@@ -197,7 +197,7 @@ the system trust store handles that automatically.
 5. `make install` — install the `GpuQuota` CRD.
 6. `make deploy IMG=<your image>` — deploy the operator.
 7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
-   `kubectl apply -f samples/gavin-test-quota.yaml`.
+   `oc apply -f samples/gavin-test-quota.yaml`.
 
 ## Uninstall
 

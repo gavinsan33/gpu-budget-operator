@@ -70,21 +70,21 @@ docker-push: ## Push docker image.
 
 .PHONY: install
 install: manifests ## Install CRDs into the cluster.
-	kubectl apply -f config/crd/
+	oc apply -f config/crd/
 
 .PHONY: uninstall
 uninstall: manifests ## Uninstall CRDs from the cluster.
-	kubectl delete -f config/crd/
+	oc delete -f config/crd/
 
 .PHONY: deploy
 deploy: manifests ## Deploy controller to the cluster.
 	cd manager && \
 	kustomize edit set image gpu-quota-operator=${IMG} && \
-	kubectl apply -k .
+	oc apply -k .
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the cluster.
-	cd manager && kubectl delete -k .
+	cd manager && oc delete -k .
 
 ##@ Build Dependencies
 
