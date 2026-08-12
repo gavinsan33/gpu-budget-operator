@@ -1,0 +1,28 @@
+apiVersion: gpuquota.io/v1alpha1
+kind: GpuQuota
+metadata:
+  name: demo-quota
+  namespace: demo
+spec:
+  period: Daily
+  # Deliberately tiny - hours elapsed since 00:00 UTC today times the demo
+  # workload's 1 reserved GPU will blow past this almost immediately, so
+  # enforcement triggers on the very first reconcile for this local test.
+  gpuHoursLimit: 0.01
+  checkInterval: 1m
+  # This mock cluster's Prometheus isn't behind ACM-hub federation, so its
+  # metrics carry a plain "namespace" label rather than "exported_namespace"
+  # - override the default query accordingly (see CLAUDE.md's "GPU-hours
+  # accounting" section).
+  query: |
+    label_replace(
+      sum by (product) (
+        avg_over_time(
+          (
+            kube_pod_resource_request{resource=~"nvidia.com/.+", namespace="__NAMESPACE__"}
+            * on(node) group_left(product) label_replace(kube_node_labels, "product", "$1", "label_nvidia_com_gpu_product", "(.+)")
+          )[__RANGE__:5m]
+        )
+      ) * __RANGE_HOURS__,
+      "gpuType", "$1", "product", "NVIDIA-(.+)"
+    )

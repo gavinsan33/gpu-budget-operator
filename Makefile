@@ -61,6 +61,27 @@ build: fmt vet ## Build manager binary.
 run: fmt vet ## Run from your host (requires cluster access).
 	go run ./main.go
 
+##@ Local dev cluster
+#
+# Not real OpenShift (no Routes/SCCs/Build API) - a kind cluster with real
+# kube-state-metrics + Prometheus + a mock DCGM exporter, for exercising the
+# reconcile/enforce loop without a live OpenShift cluster or GPUs. Lives in
+# the sibling mock-openshift-cluster repo since aibom-webhook-service (and
+# any future OpenShift+Prometheus+GPU project here) needs the same thing.
+
+MOCK_CLUSTER_DIR ?= ../mock-openshift-cluster
+
+.PHONY: dev-cluster
+dev-cluster: ## Create the local kind cluster (KSM + Prometheus + mock DCGM) and fake GPU node capacity.
+	$(MOCK_CLUSTER_DIR)/scripts/up.sh
+	$(MOCK_CLUSTER_DIR)/scripts/patch-gpu-node.sh
+	kubectl apply -f $(MOCK_CLUSTER_DIR)/examples/
+	kubectl apply -f config/crd/
+
+.PHONY: dev-cluster-down
+dev-cluster-down: ## Delete the local kind cluster.
+	$(MOCK_CLUSTER_DIR)/scripts/down.sh
+
 ##@ Deployment
 #
 # Split into a one-time, cluster-admin `bootstrap` (CRD, Namespace,
