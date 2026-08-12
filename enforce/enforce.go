@@ -506,9 +506,45 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 			continue
 		}
 
+		// Idempotency is keyed off whether a component's original was
+		// already captured in the annotation, NOT off whether the live
+		// spec currently reads as zeroed - KServe's own controller/webhook
+		// strips maxReplicas back out of the spec once it's 0 (treating 0
+		// as "unset" rather than "pinned to zero"), so re-deriving
+		// "already enforced" from the live spec would see minReplicas=0,
+		// maxReplicas=absent, wrongly conclude this component was never
+		// enforced, and re-capture that already-zeroed state as if it were
+		// the original - permanently losing the real original before
+		// gpuquota.io/reset ever gets a chance to use it.
+		annotations := obj.GetAnnotations()
 		original := map[string]componentReplicaSpec{}
-		changed := false
+		if raw, ok := annotations[AnnotationOriginalReplicaSpec]; ok {
+			if err := json.Unmarshal([]byte(raw), &original); err != nil {
+				return enforced, fmt.Errorf("unmarshaling existing original replica spec for %s/%s: %w", namespace, obj.GetName(), err)
+			}
+		}
+
+		// newlyCaptured tracks whether any component's original was
+		// captured for the first time this pass (drives whether an
+		// EnforcedResource gets recorded); needsUpdate tracks whether the
+		// object needs writing back at all, which also covers the
+		// re-affirm-only case where every component's original was already
+		// captured on an earlier pass but the live spec drifted since.
+		newlyCaptured := false
+		needsUpdate := false
 		for _, component := range inferenceServiceComponents {
+			if _, alreadyCaptured := original[component]; alreadyCaptured {
+				// Original already recorded - just re-affirm zero in case
+				// something reset it, without touching the recorded value.
+				if err := unstructured.SetNestedField(obj.Object, int64(0), "spec", component, "minReplicas"); err != nil {
+					return enforced, err
+				}
+				if err := unstructured.SetNestedField(obj.Object, int64(0), "spec", component, "maxReplicas"); err != nil {
+					return enforced, err
+				}
+				needsUpdate = true
+				continue
+			}
 			spec, found, _ := unstructured.NestedMap(obj.Object, "spec", component)
 			if !found {
 				continue
@@ -523,9 +559,10 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 			if err := unstructured.SetNestedField(obj.Object, int64(0), "spec", component, "maxReplicas"); err != nil {
 				return enforced, err
 			}
-			changed = true
+			newlyCaptured = true
+			needsUpdate = true
 		}
-		if !changed {
+		if !needsUpdate {
 			continue
 		}
 
@@ -533,7 +570,6 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 		if err != nil {
 			return enforced, fmt.Errorf("marshaling original replica spec: %w", err)
 		}
-		annotations := obj.GetAnnotations()
 		if annotations == nil {
 			annotations = map[string]string{}
 		}
@@ -543,13 +579,15 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 		if err := e.Client.Update(ctx, obj); err != nil {
 			return enforced, fmt.Errorf("zeroing inferenceservice %s/%s: %w", namespace, obj.GetName(), err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
-			APIVersion: inferenceServiceGVK.GroupVersion().String(),
-			Kind:       inferenceServiceGVK.Kind,
-			Name:       obj.GetName(),
-			Action:     ActionScaledToZero,
-			EnforcedAt: metav1.Now(),
-		})
+		if newlyCaptured {
+			enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+				APIVersion: inferenceServiceGVK.GroupVersion().String(),
+				Kind:       inferenceServiceGVK.Kind,
+				Name:       obj.GetName(),
+				Action:     ActionScaledToZero,
+				EnforcedAt: metav1.Now(),
+			})
+		}
 	}
 	return enforced, nil
 }
