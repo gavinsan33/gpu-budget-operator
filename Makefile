@@ -61,26 +61,71 @@ build: fmt vet ## Build manager binary.
 run: fmt vet ## Run from your host (requires cluster access).
 	go run ./main.go
 
-##@ Local dev cluster
+##@ Local kind cluster
 #
 # Not real OpenShift (no Routes/SCCs/Build API) - a kind cluster with real
 # kube-state-metrics + Prometheus + a mock DCGM exporter, for exercising the
 # reconcile/enforce loop without a live OpenShift cluster or GPUs. Lives in
 # the sibling mock-openshift-cluster repo since aibom-webhook-service (and
 # any future OpenShift+Prometheus+GPU project here) needs the same thing.
+#
+# The operator runs as a REAL in-cluster Deployment here, same as on
+# OpenShift - just built/loaded differently, since kind has neither
+# OpenShift's Build API (manager/deploy/build.yaml) nor its internal
+# registry (manager/deploy/deployment.yaml's image field). `kind-image`
+# builds locally and loads the result directly into the kind node instead
+# of pushing anywhere. manager/deploy/deployment.kind.yaml is the
+# corresponding stand-in for deployment.yaml: local image tag,
+# --prometheus-url pointing at this cluster's own Prometheus Service
+# directly, no service-ca mount (nothing here populates it, and the
+# operator already falls back to the system trust store when that file is
+# simply absent), and no --leader-elect (single replica for local testing;
+# there's also no RBAC anywhere in this repo for the coordination.k8s.io
+# Lease that flag needs - a real gap even on OpenShift, not specific to
+# kind, tracked separately).
+#
+# kind's kube-scheduler binds its metrics port to 127.0.0.1 by default,
+# unreachable from any in-cluster Prometheus - mock-openshift-cluster's
+# kind-config.yaml patches this. If you're pointed at a different kind
+# cluster, kube_pod_resource_request/_limit (what the default GPU-hours
+# query joins against) will silently read as empty.
 
 MOCK_CLUSTER_DIR ?= ../mock-openshift-cluster
+KIND_CLUSTER_NAME ?= mock-openshift
+KIND_IMAGE ?= localhost/gpu-quota-operator:dev
+KIND_IMAGE_TAR ?= /tmp/gpu-quota-operator-kind.tar
 
-.PHONY: dev-cluster
-dev-cluster: ## Create the local kind cluster (KSM + Prometheus + mock DCGM) and fake GPU node capacity.
+.PHONY: kind-cluster
+kind-cluster: ## Create the local kind cluster (KSM + Prometheus + mock DCGM + kube-scheduler-metrics), fake GPU node capacity, and install the CRD.
 	$(MOCK_CLUSTER_DIR)/scripts/up.sh
 	$(MOCK_CLUSTER_DIR)/scripts/patch-gpu-node.sh
 	kubectl apply -f $(MOCK_CLUSTER_DIR)/examples/
 	kubectl apply -f config/crd/
 
-.PHONY: dev-cluster-down
-dev-cluster-down: ## Delete the local kind cluster.
+.PHONY: kind-cluster-down
+kind-cluster-down: ## Delete the local kind cluster.
 	$(MOCK_CLUSTER_DIR)/scripts/down.sh
+
+.PHONY: kind-image
+kind-image: ## Build the operator image locally and load it into the kind node - no registry, no OpenShift Build API required.
+	podman build -t $(KIND_IMAGE) .
+	podman save $(KIND_IMAGE) -o $(KIND_IMAGE_TAR)
+	KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive $(KIND_IMAGE_TAR) --name $(KIND_CLUSTER_NAME)
+	rm -f $(KIND_IMAGE_TAR)
+
+.PHONY: kind-deploy
+kind-deploy: kind-image ## Build+load the image, then deploy (or redeploy) the operator as a real in-cluster Deployment. Requires `make kind-cluster` to have run at least once.
+	kubectl apply -f manager/bootstrap/namespace.yaml
+	kubectl apply -f manager/bootstrap/role.yaml
+	kubectl apply -f manager/bootstrap/role_binding.yaml
+	kubectl apply -f manager/deploy/service_account.yaml
+	kubectl apply -f manager/deploy/deployment.kind.yaml
+	kubectl -n gpu-quota-operator-system rollout restart deployment/gpu-quota-operator-controller-manager
+	kubectl -n gpu-quota-operator-system rollout status deployment/gpu-quota-operator-controller-manager --timeout=120s
+
+.PHONY: kind-undeploy
+kind-undeploy: ## Remove the in-cluster operator Deployment. Leaves the kind cluster, its RBAC/namespace, and the CRD in place.
+	kubectl delete -f manager/deploy/deployment.kind.yaml --ignore-not-found
 
 ##@ Deployment
 #

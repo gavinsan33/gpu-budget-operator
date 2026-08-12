@@ -1,0 +1,58 @@
+# A non-OpenShift substitute for deployment.yaml, for running the operator
+# as a real in-cluster Deployment against the mock-openshift-cluster kind
+# setup (see ../../samples/enforcement-kinds/ and the top-level README).
+# Differences from deployment.yaml:
+#   - image is a locally built+kind-loaded tag, not the OpenShift internal
+#     registry (build.yaml's BuildConfig/ImageStream don't exist here)
+#   - --prometheus-url points at this cluster's own Prometheus Service
+#     directly (plain HTTP, no auth) instead of OpenShift's Thanos Querier
+#   - no service-ca volume/mount - nothing here populates it, and the
+#     operator already falls back to the system trust store when the CA
+#     file is simply absent (see metrics/prometheus.go)
+#   - no --leader-elect - single replica for local testing, and there's no
+#     RBAC anywhere in this repo for the coordination.k8s.io Lease that flag
+#     requires (a real gap even for OpenShift; not specific to this cluster)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-quota-operator-controller-manager
+  namespace: gpu-quota-operator-system
+  labels:
+    control-plane: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: gpu-quota-operator-controller-manager
+      containers:
+      - name: manager
+        image: localhost/gpu-quota-operator:dev
+        imagePullPolicy: IfNotPresent
+        command:
+        - /manager
+        args:
+        - --prometheus-url=http://prometheus.monitoring.svc:9090
+        - --gpu-rate-a100=1.70
+        - --gpu-rate-h100=1.10
+        - --gpu-rate-v100=0.30
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+      securityContext:
+        runAsNonRoot: true
