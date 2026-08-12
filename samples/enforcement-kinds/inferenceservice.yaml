@@ -1,0 +1,26 @@
+# Requires the KServe CRDs - not installed by default on the mock cluster:
+#   ../../mock-openshift-cluster/manifests/optional-crds/install.sh kserve
+# (which also installs cert-manager as a prerequisite - see that repo's
+# README for the inotify "too many open files" gotcha this can hit.)
+#
+# enforce.go: minReplicas/maxReplicas set to 0 on every component present
+# (just "predictor" here). Original values marshaled to JSON into
+# gpuquota.io/original-replica-spec. Reversible.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: kill-inferenceservice
+  namespace: enforcement-kinds-demo
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: sklearn
+      storageUri: "gs://kfserving-examples/models/sklearn/1.0/model"
+      resources:
+        requests:
+          nvidia.com/gpu: "1"
+        limits:
+          nvidia.com/gpu: "1"

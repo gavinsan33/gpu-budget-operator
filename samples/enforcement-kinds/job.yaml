@@ -1,0 +1,24 @@
+# enforce.go: only standalone Jobs (no ownerReferences) are touched - a
+# JobSet's or CronJob's child Job is skipped, since suspending the JobSet
+# (or the not-yet-implemented CronJob case) already covers it. spec.suspend
+# set to true, reusing gpuquota.io/original-suspend. Reversible.
+# pause never exits, so the Job stays Active indefinitely until suspended -
+# useful for observing the suspend take effect.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kill-job
+  namespace: enforcement-kinds-demo
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"

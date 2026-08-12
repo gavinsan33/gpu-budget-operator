@@ -1,0 +1,25 @@
+# enforce.go: spec.replicas -> 0, original value saved in
+# gpuquota.io/original-replicas. Reversible via gpuquota.io/reset.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kill-deployment
+  namespace: enforcement-kinds-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kill-deployment
+  template:
+    metadata:
+      labels:
+        app: kill-deployment
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"

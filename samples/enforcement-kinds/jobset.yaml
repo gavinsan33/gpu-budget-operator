@@ -1,0 +1,29 @@
+# Requires the JobSet CRD - not installed by default on the mock cluster:
+#   ../../mock-openshift-cluster/manifests/optional-crds/install.sh jobset
+#
+# enforce.go: spec.suspend set to true directly (JobSet natively supports
+# suspend/resume, mirroring batch/v1.Job) - the one enforcement action that's
+# a first-class reversible API operation rather than an approximation.
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: kill-jobset
+  namespace: enforcement-kinds-demo
+spec:
+  replicatedJobs:
+    - name: main
+      replicas: 1
+      template:
+        spec:
+          backoffLimit: 0
+          template:
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: pause
+                  image: registry.k8s.io/pause:3.9
+                  resources:
+                    requests:
+                      nvidia.com/gpu: "1"
+                    limits:
+                      nvidia.com/gpu: "1"

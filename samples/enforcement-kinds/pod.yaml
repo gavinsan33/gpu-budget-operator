@@ -1,0 +1,20 @@
+# enforce.go: bare Pods with NO ownerReferences at all are deleted outright
+# via client.Delete - there's no scale-to-zero/suspend field on a Pod. This
+# is the ONE enforcement action in the whole operator that is NOT
+# reversible: RestoreNamespace explicitly no-ops on Kind: "Pod" entries.
+# Applying this file again after enforcement recreates it (a fresh Pod, not
+# a restore of the deleted one).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kill-pod
+  namespace: enforcement-kinds-demo
+spec:
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9
+      resources:
+        requests:
+          nvidia.com/gpu: "1"
+        limits:
+          nvidia.com/gpu: "1"

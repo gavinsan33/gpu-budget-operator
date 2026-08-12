@@ -1,0 +1,37 @@
+# enforce.go: identical mechanism to Deployment (spec.replicas -> 0, same
+# gpuquota.io/original-replicas annotation). No owner-reference check needed
+# - nothing above a StatefulSet in a vanilla ownership chain.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kill-statefulset
+  namespace: enforcement-kinds-demo
+spec:
+  clusterIP: None
+  selector:
+    app: kill-statefulset
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kill-statefulset
+  namespace: enforcement-kinds-demo
+spec:
+  serviceName: kill-statefulset
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kill-statefulset
+  template:
+    metadata:
+      labels:
+        app: kill-statefulset
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"

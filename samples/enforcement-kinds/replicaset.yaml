@@ -1,0 +1,28 @@
+# enforce.go: only ReplicaSets with NO ownerReferences are touched (a
+# Deployment-owned ReplicaSet is deliberately skipped - the Deployment
+# itself is the correct thing to enforce). This one is created directly, not
+# via a Deployment, so it qualifies. Same spec.replicas -> 0 mechanism,
+# reusing gpuquota.io/original-replicas.
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: kill-replicaset
+  namespace: enforcement-kinds-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kill-replicaset
+  template:
+    metadata:
+      labels:
+        app: kill-replicaset
+    spec:
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
