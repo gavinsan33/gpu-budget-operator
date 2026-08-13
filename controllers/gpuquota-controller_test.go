@@ -358,6 +358,204 @@ func TestReconcile_UnpricedGPUTypeWithDollarsLimitFailsLoudly(t *testing.T) {
 	if got.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
 		t.Fatalf("expected Unknown phase for an unpriced GPU type, got %s", got.Status.Phase)
 	}
+	if got.Status.Conditions[0].Reason != "UnpricedGPUType" {
+		t.Fatalf("expected UnpricedGPUType reason, got %s", got.Status.Conditions[0].Reason)
+	}
+}
+
+// TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction confirms a fresh
+// (never-enforced) quota that immediately hits an unpriced GPU type doesn't
+// touch any workload - markFailed returns before ever reaching the
+// enforcement decision at all.
+func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
+	prom := promStub(t, map[string]float64{"H100": 5})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:       gpuquotav1alpha1.PeriodMonthly,
+			DollarsLimit: float64Ptr(1000),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+		t.Fatalf("expected Unknown phase, got %s", got.Status.Phase)
+	}
+	if len(got.Status.EnforcedResources) != 0 {
+		t.Fatalf("expected no EnforcedResources recorded, got %+v", got.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 3 {
+		t.Fatalf("expected deployment untouched at 3 replicas, got %d", *gotDep.Spec.Replicas)
+	}
+}
+
+// TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant covers the
+// simple recovery path: a never-enforced quota hits an unpriced type
+// (Unknown), then a later reconcile with the rate now configured and usage
+// under budget resolves cleanly to Compliant.
+func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
+	prom := promStub(t, map[string]float64{"H100": 0.1})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:       gpuquotav1alpha1.PeriodMonthly,
+			DollarsLimit: float64Ptr(1000),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gq).WithStatusSubresource(gq).Build()
+
+	// First reconcile: no rate configured yet.
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var unknown gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &unknown); err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+		t.Fatalf("expected Unknown phase before the rate is configured, got %s", unknown.Status.Phase)
+	}
+
+	// Rate now configured (e.g. the operator restarted with --gpu-rate-h100
+	// set) and usage is comfortably under the $1000 limit.
+	r.GPURates = GPURates{H100: 1.10}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile after rate configured: %v", err)
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+		t.Fatalf("expected Compliant phase once the rate is fixed and usage is under budget, got %s", got.Status.Phase)
+	}
+}
+
+// TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset is the
+// regression test for the bug the sticky-enforcement fix above closes:
+// a namespace that's already Enforced, whose usage later includes a newly
+// unpriced GPU type, transiently fails with Phase=Unknown (via markFailed) -
+// but that failure must NOT lose track of the already-zeroed workload. Once
+// the rate gets configured and usage happens to read as back under budget,
+// the quota must still report Enforced (and the workload must still be at
+// 0 replicas) rather than silently flipping to Compliant with nothing ever
+// having gone through gpuquota.io/reset. Keying stickiness off Phase alone
+// (instead of len(EnforcedResources) > 0) would make this test fail, since
+// markFailed's Phase=Unknown would erase the "was Enforced" signal.
+func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 50})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+			DollarsLimit:  float64Ptr(1000),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	// First reconcile: over the GPU-hours limit, A100 is priced - enforces
+	// normally.
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{A100: 30}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var enforced gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &enforced); err != nil {
+		t.Fatal(err)
+	}
+	if enforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
+	}
+
+	// A workload using a brand-new, unpriced GPU type (H100) shows up
+	// alongside the existing A100 usage. computeUsage now fails.
+	prom.Close()
+	mixedProm := promStub(t, map[string]float64{"A100": 50, "H100": 5})
+	defer mixedProm.Close()
+	r.PrometheusURL = mixedProm.URL
+	r.promClient = nil
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile with unpriced H100 usage: %v", err)
+	}
+	var unknown gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &unknown); err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+		t.Fatalf("expected Unknown phase while H100 is unpriced, got %s", unknown.Status.Phase)
+	}
+	if len(unknown.Status.EnforcedResources) != 1 {
+		t.Fatalf("expected EnforcedResources to survive the transient Unknown phase untouched, got %+v", unknown.Status.EnforcedResources)
+	}
+
+	var gotDepStillZero appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDepStillZero); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDepStillZero.Spec.Replicas != 0 {
+		t.Fatalf("expected deployment to remain at 0 replicas during the transient Unknown phase, got %d", *gotDepStillZero.Spec.Replicas)
+	}
+
+	// H100 gets priced (e.g. --gpu-rate-h100 configured), and - critically -
+	// usage this time reads as comfortably under both limits.
+	mixedProm.Close()
+	lowUsageProm := promStub(t, map[string]float64{"A100": 0.1})
+	defer lowUsageProm.Close()
+	r.PrometheusURL = lowUsageProm.URL
+	r.promClient = nil
+	r.GPURates.H100 = 1.10
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile after H100 priced and usage drops: %v", err)
+	}
+
+	var final gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected phase to remain Enforced (sticky via EnforcedResources) despite usage now reading under budget - only reset lifts enforcement, got %s", final.Status.Phase)
+	}
+	if len(final.Status.EnforcedResources) != 1 {
+		t.Fatalf("expected EnforcedResources to remain populated, got %+v", final.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 0 {
+		t.Fatalf("expected deployment to remain at 0 replicas - it was never restored via gpuquota.io/reset, got %d", *gotDep.Spec.Replicas)
+	}
 }
 
 func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
@@ -848,6 +1046,263 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 	}
 	if len(got.Status.EnforcedResources) != 1 {
 		t.Fatalf("expected 1 enforced resource to have survived the retried conflict, got %d", len(got.Status.EnforcedResources))
+	}
+}
+
+// TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement covers the
+// first half of a real "reapply the quota, then reset" workflow: raising
+// spec.GPUHoursLimit (simulating `oc apply -f quota.yaml` with a bigger
+// number) via a plain spec Update, with NO reset annotation, must not lift
+// enforcement by itself even though usage is now back under the new limit -
+// gpuquota.io/reset is the only thing that ever lifts it (see
+// TestReconcile_EnforcementIsNeverAutomaticallyLifted for the equivalent
+// usage-drops-instead-of-limit-rises case).
+func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 50})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var afterEnforce gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterEnforce); err != nil {
+		t.Fatal(err)
+	}
+	if afterEnforce.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected Enforced phase, got %s", afterEnforce.Status.Phase)
+	}
+
+	// Simulate `oc apply` raising the limit well above current usage (50h),
+	// with no reset annotation.
+	afterEnforce.Spec.GPUHoursLimit = float64Ptr(1000)
+	if err := c.Update(context.Background(), &afterEnforce); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile after raising the limit: %v", err)
+	}
+
+	var afterReapply gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReapply); err != nil {
+		t.Fatal(err)
+	}
+	if afterReapply.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected phase to remain Enforced despite the higher limit - only reset lifts enforcement, got %s", afterReapply.Status.Phase)
+	}
+	if len(afterReapply.Status.EnforcedResources) != 1 {
+		t.Fatalf("expected EnforcedResources to remain populated, got %+v", afterReapply.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 0 {
+		t.Fatalf("expected deployment to remain scaled to 0 despite the higher limit, got %d replicas", *gotDep.Spec.Replicas)
+	}
+}
+
+// TestReconcile_ReapplyRaisingLimitThenResetFullyRestores covers the exact
+// workflow reported against a real cluster: enforce, then separately (a)
+// reapply the quota with spec.GPUHoursLimit raised above current usage and
+// (b) annotate gpuquota.io/reset=true - two independent updates, as
+// `oc apply` followed by `oc annotate` would produce, landing before the
+// next reconcile picks either up. A single subsequent reconcile must fully
+// restore the workload and end up Compliant with EnforcedResources cleared.
+func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 50})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var enforced gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &enforced); err != nil {
+		t.Fatal(err)
+	}
+	if enforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
+	}
+
+	// `oc apply -f quota.yaml` with a raised limit (usage is 50h; new limit
+	// is well above it) ...
+	enforced.Spec.GPUHoursLimit = float64Ptr(1000)
+	if err := c.Update(context.Background(), &enforced); err != nil {
+		t.Fatal(err)
+	}
+	// ... then, separately, `oc annotate gpuquota ... gpuquota.io/reset=true`.
+	var beforeReset gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &beforeReset); err != nil {
+		t.Fatal(err)
+	}
+	beforeReset.Annotations = map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"}
+	if err := c.Update(context.Background(), &beforeReset); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile after reapply+reset: %v", err)
+	}
+
+	var afterReset gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReset); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := afterReset.Annotations[gpuquotav1alpha1.ResetAnnotation]; ok {
+		t.Fatal("expected reset annotation to be removed after processing")
+	}
+	if afterReset.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+		t.Fatalf("expected Compliant phase, usage (50h) is now under the raised limit (1000h), got %s", afterReset.Status.Phase)
+	}
+	if len(afterReset.Status.EnforcedResources) != 0 {
+		t.Fatalf("expected EnforcedResources cleared, got %+v", afterReset.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 3 {
+		t.Fatalf("expected deployment restored to 3 replicas, got %d", *gotDep.Spec.Replicas)
+	}
+	if _, ok := gotDep.Annotations["gpuquota.io/original-replicas"]; ok {
+		t.Fatal("expected the deployment's original-replicas annotation removed after restore")
+	}
+}
+
+// TestReconcile_ResetSurvivesConflictClearingTheAnnotation reproduces a
+// third failure mode observed against a real cluster: RestoreNamespace
+// itself succeeds (the workload is genuinely restored), but the subsequent
+// plain Update that clears gpuquota.io/reset off the GpuQuota conflicts
+// (e.g. a concurrent edit bumped its resourceVersion in between). Reconcile
+// returns that error without persisting anything this pass - by design,
+// since handleManualReset returns before ever reaching persistStatus - so
+// the reset annotation is still "true" and status still shows Enforced.
+// The workload must already be restored regardless (RestoreNamespace ran
+// to completion before the conflict), and controller-runtime's normal
+// error-requeue (simulated here as a second Reconcile call) must finish
+// the job cleanly, with RestoreNamespace safely no-op'ing on the
+// already-restored resource the second time around.
+func TestReconcile_ResetSurvivesConflictClearingTheAnnotation(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 1})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	dep.Spec.Replicas = int32Ptr(0)
+	dep.Annotations = map[string]string{"gpuquota.io/original-replicas": "3"}
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "quota", Namespace: "gavin-test",
+			Annotations: map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"},
+		},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+		Status: gpuquotav1alpha1.GpuQuotaStatus{
+			Phase: gpuquotav1alpha1.PhaseEnforced,
+			EnforcedResources: []gpuquotav1alpha1.EnforcedResource{
+				{APIVersion: "apps/v1", Kind: "Deployment", Name: "model", Action: "ScaledToZero", EnforcedAt: metav1.Now()},
+			},
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	conflictsLeft := 1
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Update: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if q, ok := obj.(*gpuquotav1alpha1.GpuQuota); ok && q.Annotations[gpuquotav1alpha1.ResetAnnotation] != "true" && conflictsLeft > 0 {
+				// This is specifically handleManualReset's own
+				// annotation-clearing Update (the reset annotation is
+				// already gone from the object being written) - not the
+				// test's own setup writes above.
+				conflictsLeft--
+				return apierrors.NewConflict(schema.GroupResource{Group: "gpuquota.io", Resource: "gpuquotas"}, obj.GetName(), nil)
+			}
+			return cli.Update(ctx, obj, opts...)
+		},
+	})
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err == nil {
+		t.Fatal("expected the first reconcile to surface the injected conflict clearing the reset annotation")
+	}
+
+	// The workload must already be restored - RestoreNamespace completed
+	// successfully before the conflict on the GpuQuota's own annotation.
+	var gotDepMidway appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDepMidway); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDepMidway.Spec.Replicas != 3 {
+		t.Fatalf("expected deployment already restored to 3 replicas even though the reset overall failed, got %d", *gotDepMidway.Spec.Replicas)
+	}
+
+	var midway gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &midway); err != nil {
+		t.Fatal(err)
+	}
+	if midway.Annotations[gpuquotav1alpha1.ResetAnnotation] != "true" {
+		t.Fatal("expected the reset annotation to remain present after the failed clear, ready for a retry")
+	}
+	if midway.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected status to remain unchanged (Enforced) since Reconcile returned before persistStatus, got %s", midway.Status.Phase)
+	}
+
+	// Simulate controller-runtime's error-requeue with a second Reconcile call.
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("expected the retried reconcile to succeed once the conflict clears, got: %v", err)
+	}
+
+	var final gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &final); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := final.Annotations[gpuquotav1alpha1.ResetAnnotation]; ok {
+		t.Fatal("expected reset annotation removed after the retry succeeds")
+	}
+	if final.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+		t.Fatalf("expected Compliant phase after the retry, got %s", final.Status.Phase)
+	}
+	if len(final.Status.EnforcedResources) != 0 {
+		t.Fatalf("expected EnforcedResources cleared after the retry, got %+v", final.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 3 {
+		t.Fatalf("expected deployment still at 3 replicas after the retry (already restored, must stay a no-op), got %d", *gotDep.Spec.Replicas)
 	}
 }
 

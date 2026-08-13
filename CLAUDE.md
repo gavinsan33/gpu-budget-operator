@@ -299,6 +299,39 @@ one attempt. See `TestEnforceNamespace_ContinuesPastOneKindsFailure`,
 `TestReconcile_StatusConflictIsRetriedNotDropped` for regression coverage
 of both failure modes.
 
+**Follow-up fix: `RestoreNamespace` head-of-line blocking.** The same
+"stop at the first failure" mistake existed on the restore side:
+`RestoreNamespace` iterated `status.enforcedResources` in order and
+returned immediately on the first entry's error, so anything listed
+*after* a persistently-failing entry (not just a transiently-failing one)
+never got restored on that attempt - or on any later retry, since the
+caller always replays the same list in the same order. It now runs every
+entry regardless of an earlier one's failure and joins any errors via
+`errors.Join`, so restoring nine-out-of-ten resources' worth of a
+namespace no longer depends on that tenth one's problem going away first.
+See `TestRestoreNamespace_ContinuesPastOneEntrysFailure` and
+`TestRestoreNamespace_RetryAfterPartialFailureFinishesTheRest`.
+
+**Follow-up fix: sticky-enforcement signal.** `Reconcile`'s "is this
+namespace already enforced" check used to be `gq.Status.Phase ==
+PhaseEnforced`. `markFailed` (used for `PrometheusClientError`/
+`MetricsQueryFailed`/`UnpricedGPUType`) sets `Phase = PhaseUnknown`
+without touching `EnforcedResources` at all - and returns *before*
+`Reconcile` ever reaches the enforcement decision that reconcile. So an
+already-enforced namespace hitting one of those transient failures (e.g.
+a workload using a not-yet-priced GPU type shows up alongside existing
+usage) would flip to `Unknown`, and if the failure cleared on a later
+reconcile with usage happening to read as back under budget, it would
+fall straight through to the `else` branch and become `Compliant` -
+never restoring the still-zeroed workload, since only a real
+`gpuquota.io/reset` does that, and clearing nothing from
+`EnforcedResources` either (the `else` branch never touches it), leaving
+status internally inconsistent (`Compliant` with a stale non-empty
+`EnforcedResources`). The check is now `len(gq.Status.EnforcedResources)
+> 0`, which `markFailed` never perturbs - true ground truth for "there's
+enforcement in effect that hasn't gone through reset yet." See
+`TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset`.
+
 ### Optional CRDs
 
 JobSet and InferenceService are optional dependencies — if either CRD isn't

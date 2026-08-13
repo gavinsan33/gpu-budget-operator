@@ -120,7 +120,18 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 // state. Resources that no longer exist are skipped. Deleted Pods have no
 // restore action - deletion isn't reversible, so a "Pod"/Deleted entry is
 // left in status purely as a historical record of what enforcement did.
+//
+// It always attempts every entry, even after an earlier one fails, returning
+// a combined error via errors.Join if any did - mirroring EnforceNamespace.
+// Stopping at the first failure (the original behavior) meant one entry
+// stuck failing (a persistent conflict, a resource an admission webhook now
+// rejects the restore of, etc.) permanently head-of-line-blocked every entry
+// after it in the same list, on every single retry, since the caller always
+// retries the same (unrestored) list in the same order after any error.
+// Restoring the rest first and surfacing one combined failure gets everything
+// restorable actually restored, rather than nothing past the first snag.
 func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enforcedResources []gpuquotav1alpha1.EnforcedResource) error {
+	var errs []error
 	for _, res := range enforcedResources {
 		var err error
 		switch res.Kind {
@@ -142,10 +153,10 @@ func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enfor
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("restoring %s/%s: %w", res.Kind, res.Name, err)
+			errs = append(errs, fmt.Errorf("restoring %s/%s: %w", res.Kind, res.Name, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (e *Enforcer) enforceDeployments(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
