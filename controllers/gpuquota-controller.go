@@ -12,6 +12,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -113,11 +114,20 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	overBudget := (gq.Spec.GPUHoursLimit != nil && totalHours > *gq.Spec.GPUHoursLimit) ||
 		(gq.Spec.DollarsLimit != nil && totalDollars > *gq.Spec.DollarsLimit)
 
+	var enforceErr error
 	if overBudget || gq.Status.Phase == gpuquotav1alpha1.PhaseEnforced {
-		enforced, err := r.enforcer().EnforceNamespace(ctx, gq.Namespace)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("enforcing quota in namespace %s: %w", gq.Namespace, err)
-		}
+		var enforced []gpuquotav1alpha1.EnforcedResource
+		enforced, enforceErr = r.enforcer().EnforceNamespace(ctx, gq.Namespace)
+		// Merge whatever EnforceNamespace acted on BEFORE checking enforceErr:
+		// it keeps enforcing every remaining resource kind even after one
+		// kind's Update call fails, so enforced can be non-empty even when
+		// enforceErr != nil. A resource missing from EnforcedResources is
+		// permanently invisible to gpuquota.io/reset (RestoreNamespace only
+		// restores what's listed here) - dropping this on enforceErr would
+		// leave that resource scaled to zero forever with no error ever
+		// surfaced again, since the next reconcile sees its
+		// gpuquota.io/original-* annotation already present and won't
+		// re-report it either.
 		gq.Status.EnforcedResources = mergeEnforced(gq.Status.EnforcedResources, enforced)
 		if len(enforced) > 0 {
 			gq.Status.LastEnforcementTime = &nowMeta
@@ -127,18 +137,56 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		gq.Status.Phase = gpuquotav1alpha1.PhaseCompliant
 	}
 
-	apimeta.SetStatusCondition(&gq.Status.Conditions, metav1.Condition{
-		Type:    readyCondition,
-		Status:  metav1.ConditionTrue,
-		Reason:  "UsageEvaluated",
-		Message: fmt.Sprintf("gpuHours=%.2f dollars=%.2f phase=%s", totalHours, totalDollars, gq.Status.Phase),
-	})
-	if err := r.Status().Update(ctx, &gq); err != nil {
+	if enforceErr != nil {
+		apimeta.SetStatusCondition(&gq.Status.Conditions, metav1.Condition{
+			Type:    readyCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  "EnforcementFailed",
+			Message: enforceErr.Error(),
+		})
+	} else {
+		apimeta.SetStatusCondition(&gq.Status.Conditions, metav1.Condition{
+			Type:    readyCondition,
+			Status:  metav1.ConditionTrue,
+			Reason:  "UsageEvaluated",
+			Message: fmt.Sprintf("gpuHours=%.2f dollars=%.2f phase=%s", totalHours, totalDollars, gq.Status.Phase),
+		})
+	}
+	if err := r.persistStatus(ctx, &gq); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status for %s/%s: %w", gq.Namespace, gq.Name, err)
+	}
+	if enforceErr != nil {
+		return ctrl.Result{}, fmt.Errorf("enforcing quota in namespace %s: %w", gq.Namespace, enforceErr)
 	}
 
 	logger.V(1).Info("reconciled GpuQuota", "namespace", gq.Namespace, "gpuHours", totalHours, "dollars", totalDollars, "phase", gq.Status.Phase)
 	return ctrl.Result{RequeueAfter: durationOrDefault(gq.Spec.CheckInterval.Duration, 15*time.Minute)}, nil
+}
+
+// persistStatus writes gq's in-memory Status onto the current version of the
+// object in the API, retrying on resourceVersion conflicts by re-fetching
+// the latest copy and reapplying the same desired status (computed entirely
+// from this reconcile's own Prometheus/enforcement results, not from
+// whatever gq's stale fields were, so it's always safe to replay). A plain
+// Status().Update with no retry would silently discard this reconcile's
+// work on any conflict - including, worst case, a freshly-computed
+// EnforcedResources entry for a resource that was just successfully scaled
+// to zero on the cluster a moment earlier, permanently orphaning it (see
+// EnforceNamespace's doc comment).
+func (r *GpuQuotaReconciler) persistStatus(ctx context.Context, gq *gpuquotav1alpha1.GpuQuota) error {
+	desired := gq.Status.DeepCopy()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest gpuquotav1alpha1.GpuQuota
+		if err := r.Get(ctx, client.ObjectKeyFromObject(gq), &latest); err != nil {
+			return err
+		}
+		latest.Status = *desired
+		if err := r.Status().Update(ctx, &latest); err != nil {
+			return err
+		}
+		gq.ResourceVersion = latest.ResourceVersion
+		return nil
+	})
 }
 
 // computeUsage totals GPU-hours across all types and, if needsDollars,

@@ -11,12 +11,15 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	gpuquotav1alpha1 "github.com/gsanders/gpu-quota-operator/v1alpha1"
 )
@@ -723,6 +726,128 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	}
 	if *gotDep.Spec.Replicas != 3 {
 		t.Fatalf("expected non-GPU deployment untouched, got %d replicas", *gotDep.Spec.Replicas)
+	}
+}
+
+// TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries reproduces
+// the bug where a transient conflict enforcing one GPU workload (the
+// StatefulSet, here) caused the Deployment successfully zeroed in the same
+// EnforceNamespace call to never be recorded in
+// Status.EnforcedResources - Reconcile used to bail out on the first
+// enforcement error before ever merging or persisting what had already
+// succeeded. Losing that entry means gpuquota.io/reset later finds nothing
+// to restore for it: the workload stays scaled to zero forever with no
+// error ever surfaced again.
+func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 50})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	sts := gpuStatefulSet("gavin-test", "training", 1)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, sts, gq).WithStatusSubresource(gq).Build()
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Update: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*appsv1.StatefulSet); ok {
+				return apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: "statefulsets"}, obj.GetName(), nil)
+			}
+			return cli.Update(ctx, obj, opts...)
+		},
+	})
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err == nil {
+		t.Fatal("expected Reconcile to return the StatefulSet enforcement error, got nil")
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected Enforced phase despite the partial failure, got %s", got.Status.Phase)
+	}
+	found := false
+	for _, res := range got.Status.EnforcedResources {
+		if res.Kind == "Deployment" && res.Name == "model" {
+			found = true
+		}
+		if res.Kind == "StatefulSet" && res.Name == "training" {
+			t.Errorf("did not expect StatefulSet/training in EnforcedResources, its update failed: %+v", got.Status.EnforcedResources)
+		}
+	}
+	if !found {
+		t.Fatalf("expected Deployment/model in EnforcedResources despite the StatefulSet failing in the same pass, got %+v", got.Status.EnforcedResources)
+	}
+
+	var gotDep appsv1.Deployment
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
+		t.Fatal(err)
+	}
+	if *gotDep.Spec.Replicas != 0 {
+		t.Fatalf("expected Deployment/model scaled to 0, got %d", *gotDep.Spec.Replicas)
+	}
+}
+
+// TestReconcile_StatusConflictIsRetriedNotDropped reproduces the other half
+// of the same bug: a resourceVersion conflict on the GpuQuota's own status
+// update (e.g. from a concurrent spec edit) used to make Reconcile give up
+// immediately via a plain Status().Update(), discarding this reconcile's
+// freshly computed EnforcedResources/phase entirely - the next reconcile
+// would then only recover them if the failing resource kind's capture
+// happened to succeed again, which it wouldn't (its gpuquota.io/original-*
+// annotation is already set). persistStatus must instead retry against a
+// freshly re-fetched copy of the object.
+func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100": 50})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	dep := gpuDeployment("gavin-test", "model", 3)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:        gpuquotav1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+
+	conflictsLeft := 1
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, cli client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if subResourceName == "status" && conflictsLeft > 0 {
+				conflictsLeft--
+				return apierrors.NewConflict(schema.GroupResource{Group: "gpuquota.io", Resource: "gpuquotas"}, obj.GetName(), nil)
+			}
+			return cli.Status().Update(ctx, obj, opts...)
+		},
+	})
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v (persistStatus should have retried the single injected conflict)", err)
+	}
+	if conflictsLeft != 0 {
+		t.Fatalf("expected the injected conflict to have been consumed by a retry, conflictsLeft=%d", conflictsLeft)
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+		t.Fatalf("expected Enforced phase to have survived the retried conflict, got %s", got.Status.Phase)
+	}
+	if len(got.Status.EnforcedResources) != 1 {
+		t.Fatalf("expected 1 enforced resource to have survived the retried conflict, got %d", len(got.Status.EnforcedResources))
 	}
 }
 
