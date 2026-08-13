@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -213,7 +212,7 @@ func (r *GpuQuotaReconciler) computeUsage(hoursByType map[string]float64, needsD
 		if needsDollars {
 			rate, ok := r.GPURates.RateFor(gpuType)
 			if !ok {
-				return 0, 0, nil, fmt.Errorf("namespace %s used unpriced GPU type %q: set the operator's --gpu-rate-%s flag", namespace, gpuType, strings.ToLower(gpuType))
+				return 0, 0, nil, fmt.Errorf("namespace %s used unpriced GPU type %q: set the operator's --gpu-rate=<family>=<usd> flag for its GPU family", namespace, gpuType)
 			}
 			totalDollars += hours * rate
 		}
