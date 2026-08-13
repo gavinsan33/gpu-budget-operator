@@ -114,8 +114,20 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	overBudget := (gq.Spec.GPUHoursLimit != nil && totalHours > *gq.Spec.GPUHoursLimit) ||
 		(gq.Spec.DollarsLimit != nil && totalDollars > *gq.Spec.DollarsLimit)
 
+	// A non-empty EnforcedResources, not Phase == PhaseEnforced, is the
+	// ground truth for "is anything currently enforced" - Phase can be
+	// perturbed to Unknown by an unrelated transient failure (markFailed,
+	// e.g. a metrics query error or an unpriced GPU type) on a reconcile
+	// that never reaches this point at all, without EnforcedResources ever
+	// changing. Keying stickiness off Phase would let a namespace fall
+	// straight through to Compliant - clearing nothing, restoring
+	// nothing - the moment that transient failure clears and usage
+	// happens to read as under budget, silently abandoning already-zeroed
+	// workloads with no reset ever having run.
+	stickyEnforced := len(gq.Status.EnforcedResources) > 0
+
 	var enforceErr error
-	if overBudget || gq.Status.Phase == gpuquotav1alpha1.PhaseEnforced {
+	if overBudget || stickyEnforced {
 		var enforced []gpuquotav1alpha1.EnforcedResource
 		enforced, enforceErr = r.enforcer().EnforceNamespace(ctx, gq.Namespace)
 		// Merge whatever EnforceNamespace acted on BEFORE checking enforceErr:
