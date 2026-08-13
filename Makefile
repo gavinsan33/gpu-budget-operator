@@ -84,27 +84,20 @@ run: fmt vet ## Run from your host (requires cluster access).
 # Lease that flag needs - a real gap even on OpenShift, not specific to
 # kind, tracked separately).
 #
+# Cluster lifecycle (create/delete the kind cluster, KSM/Prometheus/mock
+# DCGM, fake GPU node capacity, CRD install) is handled directly in the
+# sibling mock-openshift-cluster repo, not here - these targets assume that
+# cluster is already up.
+#
 # kind's kube-scheduler binds its metrics port to 127.0.0.1 by default,
 # unreachable from any in-cluster Prometheus - mock-openshift-cluster's
 # kind-config.yaml patches this. If you're pointed at a different kind
 # cluster, kube_pod_resource_request/_limit (what the default GPU-hours
 # query joins against) will silently read as empty.
 
-MOCK_CLUSTER_DIR ?= ../mock-openshift-cluster
 KIND_CLUSTER_NAME ?= mock-openshift
 KIND_IMAGE ?= localhost/gpu-quota-operator:dev
 KIND_IMAGE_TAR ?= /tmp/gpu-quota-operator-kind.tar
-
-.PHONY: kind-cluster
-kind-cluster: ## Create the local kind cluster (KSM + Prometheus + mock DCGM + kube-scheduler-metrics), fake GPU node capacity, and install the CRD.
-	$(MOCK_CLUSTER_DIR)/scripts/up.sh
-	$(MOCK_CLUSTER_DIR)/scripts/patch-gpu-node.sh
-	oc apply -f $(MOCK_CLUSTER_DIR)/examples/
-	oc apply -f config/crd/
-
-.PHONY: kind-cluster-down
-kind-cluster-down: ## Delete the local kind cluster.
-	$(MOCK_CLUSTER_DIR)/scripts/down.sh
 
 .PHONY: kind-image
 kind-image: ## Build the operator image locally and load it into the kind node - no registry, no OpenShift Build API required.
@@ -114,7 +107,8 @@ kind-image: ## Build the operator image locally and load it into the kind node -
 	rm -f $(KIND_IMAGE_TAR)
 
 .PHONY: kind-deploy
-kind-deploy: kind-image ## Build+load the image, then deploy (or redeploy) the operator as a real in-cluster Deployment. Requires `make kind-cluster` to have run at least once.
+kind-deploy: manifests kind-image ## Build+load the image, then deploy (or redeploy) the operator as a real in-cluster Deployment, including the CRD. Requires the kind cluster to already be up.
+	oc apply -f config/crd/
 	oc apply -f manager/bootstrap/namespace.yaml
 	oc apply -f manager/bootstrap/role.yaml
 	oc apply -f manager/bootstrap/role_binding.yaml
