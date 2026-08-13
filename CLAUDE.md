@@ -154,12 +154,19 @@ override must still return one vector sample per GPU type, labeled
 `gpuType`, with a value matching a rate key (`a100`/`h100`/`v100`,
 case-insensitive) - see `metrics.GPUHoursByType`.
 
-The GPU-hours-per-type computation itself (`avg_over_time(...) *
-__RANGE_HOURS__` in `BuildGPUHoursQuery`) is deliberately
-resolution-independent: it doesn't assume any particular Prometheus
-scrape/recording interval, unlike a `sum_over_time(...) * step/3600`
-formulation (which is what a typical showback/billing dashboard uses, since
-it usually already knows its own recording-rule interval) would require.
+The GPU-hours-per-type computation itself is `sum_over_time(X[__RANGE__:5m])
+* (5.0/60)`, NOT `avg_over_time(X[__RANGE__:5m]) * __RANGE_HOURS__` (an
+earlier version used the latter). Averaging the reservation over the whole
+period and multiplying by the period's full nominal length silently assumes
+the series existed for the entire period - it doesn't whenever a workload
+(or Prometheus itself) started mid-period, so a pod that only reserved a
+GPU for the last hour of a 300-hour month got billed ~300 GPU-hours instead
+of ~1. `sum_over_time * step-hours` instead accumulates only the time
+actually covered by samples. The `:5m` step here is this query's own
+subquery resampling interval, fixed by us and evaluated the same way
+regardless of the target Prometheus's native scrape/recording interval -
+so this is no less resolution-independent than the range-average form was;
+it never needed to know the target's own recording-rule interval, either.
 
 ### Enforcement and restore (`enforce/enforce.go`)
 

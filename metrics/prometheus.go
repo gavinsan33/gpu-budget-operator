@@ -29,10 +29,26 @@ import (
 // kube_node_labels with the node's GPU product allow-listed under
 // "nvidia.com/gpu.product" (the label NVIDIA's GPU Operator / node feature
 // discovery commonly sets) - VERIFY this matches your cluster before
-// relying on it, and override via spec.query if not. The GPU-hours
-// computation itself (avg reservation count over the range * range length
-// in hours) is resolution-independent - it doesn't assume any particular
-// Prometheus scrape/recording interval.
+// relying on it, and override via spec.query if not.
+//
+// The GPU-hours computation itself sums each 5m-resampled reservation
+// sample (sum_over_time) and multiplies by that same 5m step expressed in
+// hours (5.0/60). This is deliberately NOT "avg_over_time(...) *
+// __RANGE_HOURS__": averaging the reservation over the whole period and
+// then multiplying by the period's full nominal length silently assumes
+// the series existed for the entire period. It doesn't, whenever a
+// workload (or Prometheus itself) started mid-period - a pod that's only
+// reserved a GPU for the last hour of a 300-hour month would get billed
+// ~300 GPU-hours instead of ~1, since avg_over_time only averages over the
+// samples that exist and the multiply-by-full-range then extrapolates that
+// average back across time when the pod wasn't even running.
+// sum_over_time * step-hours instead accumulates only the time actually
+// covered by samples, so a short-lived reservation reports a
+// correspondingly small number of hours. The ":5m" step is this query's
+// own subquery resampling interval (fixed by us, evaluated identically
+// regardless of the underlying Prometheus's native scrape interval), not
+// the target Prometheus's scrape/recording resolution - so this is no less
+// resolution-independent than the range-average form was.
 //
 // Uses "exported_namespace" rather than a plain "namespace" label: this
 // operator's target Prometheus is scraped through an ACM-hub-style
@@ -43,13 +59,13 @@ import (
 // "namespace" label instead.
 const DefaultGPUHoursQueryTemplate = `label_replace(
   sum by (product) (
-    avg_over_time(
+    sum_over_time(
       (
         kube_pod_resource_request{resource=~"nvidia.com/.+", exported_namespace="__NAMESPACE__"}
         * on(node) group_left(product) label_replace(kube_node_labels, "product", "$1", "label_nvidia_com_gpu_product", "(.+)")
       )[__RANGE__:5m]
-    )
-  ) * __RANGE_HOURS__,
+    ) * (5.0/60)
+  ),
   "gpuType", "$1", "product", "NVIDIA-(.+)"
 )`
 

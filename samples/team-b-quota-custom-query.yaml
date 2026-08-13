@@ -18,8 +18,8 @@ spec:
   query: |
     label_replace(
       sum by (modelName) (
-        avg_over_time(DCGM_FI_DEV_GPU_UTIL{exported_namespace="__NAMESPACE__"}[__RANGE__]) / 100
-      ) * __RANGE_HOURS__,
+        sum_over_time((DCGM_FI_DEV_GPU_UTIL{exported_namespace="__NAMESPACE__"}[__RANGE__:5m]) / 100) * (5.0/60)
+      ),
       "gpuType", "$1", "modelName", "NVIDIA-(.+)"
     )
   checkInterval: 15m

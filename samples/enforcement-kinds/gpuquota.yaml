@@ -5,10 +5,10 @@ metadata:
   namespace: enforcement-kinds-demo
 spec:
   period: Daily
-  # Deliberately tiny - hours elapsed since 00:00 UTC today times any one
-  # workload's 1 reserved GPU blows past this almost immediately, so every
-  # kind in this directory gets enforced on the very first reconcile.
-  gpuHoursLimit: 0.01
+  # Deliberately tiny - any one workload's 1 reserved GPU blows past this
+  # within about 3 minutes of actually running, so every kind in this
+  # directory gets enforced on the very first reconcile.
+  gpuHoursLimit: 0.05 # 3 mins
   checkInterval: 1m
   # This mock cluster's Prometheus isn't behind ACM-hub federation, so its
   # metrics carry a plain "namespace" label rather than "exported_namespace"
@@ -16,12 +16,12 @@ spec:
   query: |
     label_replace(
       sum by (product) (
-        avg_over_time(
+        sum_over_time(
           (
             kube_pod_resource_request{resource=~"nvidia.com/.+", namespace="__NAMESPACE__"}
             * on(node) group_left(product) label_replace(kube_node_labels, "product", "$1", "label_nvidia_com_gpu_product", "(.+)")
           )[__RANGE__:5m]
-        )
-      ) * __RANGE_HOURS__,
+        ) * (5.0/60)
+      ),
       "gpuType", "$1", "product", "NVIDIA-(.+)"
     )
