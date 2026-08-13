@@ -374,8 +374,20 @@ present on any Kubernetes cluster.
   price it, compare to budget, enforce/hold/restore.
 - `controllers/period.go` — `periodStart`: calendar-aligned (UTC) period
   boundary calculation for Daily/Weekly/Monthly.
-- `controllers/rates.go` — `GPURates`: the operator-wide `$/GPU-hour` table
-  (`RateFor` treats a zero rate as "unconfigured," not "free").
+- `controllers/rates.go` — `GPURates`: a `map[string]float64` from GPU
+  family (e.g. `"A100"`) to its `$/GPU-hour` rate, set once via one or more
+  repeatable `--gpu-rate=<family>=<usd>` flags (`main.go`'s `gpuRatesFlag`
+  implements `flag.Value` to accumulate them). Adding a rate for a new GPU
+  family, or changing an existing one, is purely a deployment manifest
+  change - never a code change or rebuild. `RateFor` matches by family
+  *prefix* (longest match wins), not exact equality: the default query's
+  `gpuType` is typically a full SKU like `"A100-SXM4-80GB"` (from a node's
+  product label), not the bare family name a rate is configured under - an
+  exact-match `RateFor` would leave every such SKU permanently unpriced
+  regardless of the family rate being set (a real bug found running
+  against a mock cluster; see `TestGPURates_RateFor_MatchesFullSKUsByFamilyPrefix`
+  and `TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName`). A zero/
+  absent rate is treated as "unconfigured," not "free."
 - `metrics/prometheus.go` — Prometheus HTTP API client, GPU-hours-by-type
   query building/parsing, default PromQL.
 - `enforce/enforce.go` — scale-down/suspend/restore logic per workload kind;

@@ -38,9 +38,9 @@ spec:
         - /manager
         args:
         - --prometheus-url=http://prometheus.monitoring.svc:9090
-        - --gpu-rate-a100=1.70
-        - --gpu-rate-h100=1.10
-        - --gpu-rate-v100=0.30
+        - --gpu-rate=A100=1.70
+        - --gpu-rate=H100=1.10
+        - --gpu-rate=V100=0.30
         resources:
           limits:
             cpu: 500m

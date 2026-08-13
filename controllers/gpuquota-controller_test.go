@@ -314,7 +314,7 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{A100: 30}}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -328,6 +328,45 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 	}
 	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase since dollars exceeded budget despite GPU-hours being under, got %s", got.Status.Phase)
+	}
+}
+
+// TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName reproduces the
+// bug found running against a real cluster: the default GPU-hours query's
+// gpuType comes from a node's full product label via label_replace(...,
+// "NVIDIA-(.+)"), so a real cluster reports gpuType as a full SKU like
+// "A100-SXM4-80GB", not the bare family name "A100" every unit test above
+// uses. --gpu-rate=A100=<usd> must still price it (RateFor matches by family
+// prefix, not exact equality) - this is the one test in the suite using a
+// full-SKU gpuType end-to-end through Reconcile, not just RateFor directly.
+func TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName(t *testing.T) {
+	prom := promStub(t, map[string]float64{"A100-SXM4-80GB": 10})
+	defer prom.Close()
+
+	scheme := newScheme(t)
+	gq := &gpuquotav1alpha1.GpuQuota{
+		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		Spec: gpuquotav1alpha1.GpuQuotaSpec{
+			Period:       gpuquotav1alpha1.PeriodMonthly,
+			DollarsLimit: float64Ptr(100),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gq).WithStatusSubresource(gq).Build()
+
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got gpuquotav1alpha1.GpuQuota
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase == gpuquotav1alpha1.PhaseUnknown {
+		t.Fatalf("expected the full-SKU gpuType to be priced via family-prefix matching, got Unknown phase: %+v", got.Status.Conditions)
+	}
+	if got.Status.DollarsUsed != 300 {
+		t.Fatalf("expected DollarsUsed=300 (10h * $30 A100 rate) for gpuType \"A100-SXM4-80GB\", got %v", got.Status.DollarsUsed)
 	}
 }
 
@@ -438,9 +477,9 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 		t.Fatalf("expected Unknown phase before the rate is configured, got %s", unknown.Status.Phase)
 	}
 
-	// Rate now configured (e.g. the operator restarted with --gpu-rate-h100
+	// Rate now configured (e.g. the operator restarted with --gpu-rate=H100=<usd>
 	// set) and usage is comfortably under the $1000 limit.
-	r.GPURates = GPURates{H100: 1.10}
+	r.GPURates = GPURates{"H100": 1.10}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile after rate configured: %v", err)
 	}
@@ -483,7 +522,7 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 
 	// First reconcile: over the GPU-hours limit, A100 is priced - enforces
 	// normally.
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{A100: 30}}
+	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -525,14 +564,14 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 		t.Fatalf("expected deployment to remain at 0 replicas during the transient Unknown phase, got %d", *gotDepStillZero.Spec.Replicas)
 	}
 
-	// H100 gets priced (e.g. --gpu-rate-h100 configured), and - critically -
-	// usage this time reads as comfortably under both limits.
+	// H100 gets priced (e.g. --gpu-rate=H100=1.10 configured), and -
+	// critically - usage this time reads as comfortably under both limits.
 	mixedProm.Close()
 	lowUsageProm := promStub(t, map[string]float64{"A100": 0.1})
 	defer lowUsageProm.Close()
 	r.PrometheusURL = lowUsageProm.URL
 	r.promClient = nil
-	r.GPURates.H100 = 1.10
+	r.GPURates["H100"] = 1.10
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
 		t.Fatalf("reconcile after H100 priced and usage drops: %v", err)

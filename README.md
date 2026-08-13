@@ -31,7 +31,7 @@ independently against the same namespace's workloads.
 |---|---|---|---|
 | `period` | string (`Daily`/`Weekly`/`Monthly`) | *(required)* | The calendar-aligned billing cycle the budget resets on. `Daily` starts at 00:00 UTC; `Weekly` starts Monday 00:00 UTC; `Monthly` starts on the 1st at 00:00 UTC. These are fixed calendar boundaries, **not** rolling windows — `Monthly` always resets on the 1st, never "30 days before now." |
 | `gpuHoursLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative GPU-hours, summed across all GPU types, allowed within the current period. |
-| `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the operator's `--gpu-rate-a100`/`--gpu-rate-h100`/`--gpu-rate-v100` flags. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
+| `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the operator's `--gpu-rate=<family>=<usd>` flags. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
 | `query` | string | reservation-based default (see below) | Overrides the PromQL used to compute cumulative GPU-hours consumed since the period started, broken out by GPU type. Must return one sample per GPU type, each labeled `gpuType` with a value matching a rate key (`a100`/`h100`/`v100`, case-insensitive). `__NAMESPACE__`, `__RANGE__`, and `__RANGE_HOURS__` are substituted with the namespace, a PromQL range duration, and that same range as a plain hour count, respectively. Override this to switch accounting methodologies (e.g. DCGM utilization-based instead of reservation-based) without any code or CRD change — see `samples/team-b-quota-custom-query.yaml`. |
 | `checkInterval` | duration | `15m` | How often cumulative usage is re-evaluated. Defaults to 15m to match typical GPU-cluster billing granularity - checking more often than billing itself updates doesn't surface anything new. |
 
@@ -123,8 +123,9 @@ clean slate to try again (e.g. after raising the limit).
   default): see "Prometheus authentication" below for the RBAC/token/TLS
   pieces required.
 - If any `GpuQuota` sets `spec.dollarsLimit`: real `$/GPU-hour` rates set via
-  the operator's `--gpu-rate-a100`/`--gpu-rate-h100`/`--gpu-rate-v100` flags
-  for every GPU type namespaces actually use — see "Install" below.
+  the operator's `--gpu-rate=<family>=<usd>` flags (one per GPU family, e.g.
+  `--gpu-rate=A100=1.70`) for every GPU family namespaces actually use — see
+  "Install" below.
 - Optional: [JobSet](https://github.com/kubernetes-sigs/jobset) and
   [KServe](https://github.com/kserve/kserve) CRDs installed, if you want
   those workload types enforced (Deployment/StatefulSet/ReplicaSet/Job/Pod
@@ -236,11 +237,15 @@ an unauthenticated request both happen automatically.
    `manager/deploy/deployment.yaml`'s `--prometheus-url` flag — see
    "Prometheus authentication" above for what else needs to match.
 2. If any namespace will use `spec.dollarsLimit`, replace the placeholder
-   `--gpu-rate-a100`/`--gpu-rate-h100`/`--gpu-rate-v100=0` values in
-   `manager/deploy/deployment.yaml` with your real `$/GPU-hour` rates. A
-   rate of `0` is treated as "not configured," not "free" — a namespace
-   using an unpriced GPU type with `dollarsLimit` set will report
-   `status.phase: Unknown` rather than silently undercounting cost.
+   `--gpu-rate=A100=1.70`/`--gpu-rate=H100=1.10`/`--gpu-rate=V100=0.30`
+   flags in `manager/deploy/deployment.yaml` with your real `$/GPU-hour`
+   rates — add another `--gpu-rate=<family>=<usd>` flag for any GPU family
+   not already listed, no code change or rebuild required. Rates are
+   matched against `gpuType` by family prefix (e.g. `A100` matches a
+   `gpuType` of `A100-SXM4-80GB`), and an unset family is treated as "not
+   configured," not "free" — a namespace using an unpriced GPU family with
+   `dollarsLimit` set will report `status.phase: Unknown` rather than
+   silently undercounting cost.
 3. `make manifests` — regenerate the CRD from the Go types.
 4. `make test` — run unit tests.
 5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`

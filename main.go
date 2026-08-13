@@ -2,7 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -23,24 +26,55 @@ func init() {
 	utilruntime.Must(gpuquotav1alpha1.AddToScheme(scheme))
 }
 
+// gpuRatesFlag accumulates repeated --gpu-rate=<family>=<usd> flags into a
+// controllers.GPURates, implementing flag.Value so a new GPU family (or a
+// changed rate for an existing one) is purely a deployment manifest change,
+// never a code change.
+type gpuRatesFlag struct {
+	rates controllers.GPURates
+}
+
+func (f *gpuRatesFlag) String() string {
+	if f == nil || len(f.rates) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(f.rates))
+	for family, rate := range f.rates {
+		parts = append(parts, fmt.Sprintf("%s=%g", family, rate))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (f *gpuRatesFlag) Set(value string) error {
+	family, rateStr, ok := strings.Cut(value, "=")
+	if !ok || family == "" {
+		return fmt.Errorf("expected <family>=<usd-per-gpu-hour> (e.g. A100=1.70), got %q", value)
+	}
+	rate, err := strconv.ParseFloat(rateStr, 64)
+	if err != nil {
+		return fmt.Errorf("parsing rate in %q: %w", value, err)
+	}
+	if f.rates == nil {
+		f.rates = controllers.GPURates{}
+	}
+	f.rates[strings.ToUpper(family)] = rate
+	return nil
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var prometheusURL string
-	var gpuRateA100 float64
-	var gpuRateH100 float64
-	var gpuRateV100 float64
+	gpuRates := &gpuRatesFlag{}
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&prometheusURL, "prometheus-url", "",
 		"The single, cluster-wide Prometheus/Thanos base URL every GpuQuota is evaluated against.")
-	flag.Float64Var(&gpuRateA100, "gpu-rate-a100", 0,
-		"USD cost per GPU-hour for NVIDIA A100. Required if any GpuQuota sets spec.dollarsLimit and uses A100s.")
-	flag.Float64Var(&gpuRateH100, "gpu-rate-h100", 0,
-		"USD cost per GPU-hour for NVIDIA H100. Required if any GpuQuota sets spec.dollarsLimit and uses H100s.")
-	flag.Float64Var(&gpuRateV100, "gpu-rate-v100", 0,
-		"USD cost per GPU-hour for NVIDIA V100. Required if any GpuQuota sets spec.dollarsLimit and uses V100s.")
+	flag.Var(gpuRates, "gpu-rate",
+		"USD cost per GPU-hour for a GPU family, as <family>=<usd> (e.g. A100=1.70). "+
+			"Repeatable - pass once per GPU family any GpuQuota with spec.dollarsLimit might use. "+
+			"Matched against gpuType by family prefix, so one A100 rate covers every A100 SKU.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -62,11 +96,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		PrometheusURL: prometheusURL,
-		GPURates: controllers.GPURates{
-			A100: gpuRateA100,
-			H100: gpuRateH100,
-			V100: gpuRateV100,
-		},
+		GPURates:      gpuRates.rates,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GpuQuota")
 		os.Exit(1)
