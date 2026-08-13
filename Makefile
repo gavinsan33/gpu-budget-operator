@@ -99,8 +99,8 @@ KIND_IMAGE_TAR ?= /tmp/gpu-quota-operator-kind.tar
 kind-cluster: ## Create the local kind cluster (KSM + Prometheus + mock DCGM + kube-scheduler-metrics), fake GPU node capacity, and install the CRD.
 	$(MOCK_CLUSTER_DIR)/scripts/up.sh
 	$(MOCK_CLUSTER_DIR)/scripts/patch-gpu-node.sh
-	kubectl apply -f $(MOCK_CLUSTER_DIR)/examples/
-	kubectl apply -f config/crd/
+	oc apply -f $(MOCK_CLUSTER_DIR)/examples/
+	oc apply -f config/crd/
 
 .PHONY: kind-cluster-down
 kind-cluster-down: ## Delete the local kind cluster.
@@ -115,17 +115,17 @@ kind-image: ## Build the operator image locally and load it into the kind node -
 
 .PHONY: kind-deploy
 kind-deploy: kind-image ## Build+load the image, then deploy (or redeploy) the operator as a real in-cluster Deployment. Requires `make kind-cluster` to have run at least once.
-	kubectl apply -f manager/bootstrap/namespace.yaml
-	kubectl apply -f manager/bootstrap/role.yaml
-	kubectl apply -f manager/bootstrap/role_binding.yaml
-	kubectl apply -f manager/deploy/service_account.yaml
-	kubectl apply -f manager/deploy/deployment.kind.yaml
-	kubectl -n gpu-quota-operator-system rollout restart deployment/gpu-quota-operator-controller-manager
-	kubectl -n gpu-quota-operator-system rollout status deployment/gpu-quota-operator-controller-manager --timeout=120s
+	oc apply -f manager/bootstrap/namespace.yaml
+	oc apply -f manager/bootstrap/role.yaml
+	oc apply -f manager/bootstrap/role_binding.yaml
+	oc apply -f manager/deploy/service_account.yaml
+	oc apply -f manager/deploy/deployment.kind.yaml
+	oc -n gpu-quota-operator-system rollout restart deployment/gpu-quota-operator-controller-manager
+	oc -n gpu-quota-operator-system rollout status deployment/gpu-quota-operator-controller-manager --timeout=120s
 
 .PHONY: kind-undeploy
 kind-undeploy: ## Remove the in-cluster operator Deployment. Leaves the kind cluster, its RBAC/namespace, and the CRD in place.
-	kubectl delete -f manager/deploy/deployment.kind.yaml --ignore-not-found
+	oc delete -f manager/deploy/deployment.kind.yaml --ignore-not-found
 
 ##@ Deployment
 #
