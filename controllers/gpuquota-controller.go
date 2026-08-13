@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -98,9 +99,14 @@ func (r *GpuQuotaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	nowMeta := metav1.NewTime(now)
 	startMeta := metav1.NewTime(start)
 	gq.Status.CurrentPeriodStart = &startMeta
-	gq.Status.GPUHoursUsed = totalHours
-	gq.Status.GPUHoursByType = usageByType
-	gq.Status.DollarsUsed = totalDollars
+	// Enforcement below still compares the unrounded totalHours/totalDollars
+	// against the spec limits - rounding here is purely so the recorded and
+	// displayed status (kubectl get's GPUHOURSUSED/DOLLARSUSED columns,
+	// status.gpuHoursByType) doesn't carry meaningless float noise like
+	// 0.08333333333333333.
+	gq.Status.GPUHoursUsed = roundToHundredths(totalHours)
+	gq.Status.GPUHoursByType = roundUsageByType(usageByType)
+	gq.Status.DollarsUsed = roundToHundredths(totalDollars)
 	gq.Status.LastCheckedTime = &nowMeta
 	gq.Status.ObservedGeneration = gq.Generation
 
@@ -154,6 +160,23 @@ func (r *GpuQuotaReconciler) computeUsage(hoursByType map[string]float64, needsD
 	}
 	sort.Slice(usage, func(i, j int) bool { return usage[i].GPUType < usage[j].GPUType })
 	return totalHours, totalDollars, usage, nil
+}
+
+// roundToHundredths rounds v to 2 decimal places, for recording/display
+// purposes only - callers that need to compare against a spec limit should
+// use the unrounded value.
+func roundToHundredths(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+// roundUsageByType returns a copy of usage with each entry's GPUHours
+// rounded via roundToHundredths.
+func roundUsageByType(usage []gpuquotav1alpha1.GPUTypeUsage) []gpuquotav1alpha1.GPUTypeUsage {
+	rounded := make([]gpuquotav1alpha1.GPUTypeUsage, len(usage))
+	for i, u := range usage {
+		rounded[i] = gpuquotav1alpha1.GPUTypeUsage{GPUType: u.GPUType, GPUHours: roundToHundredths(u.GPUHours)}
+	}
+	return rounded
 }
 
 // handleManualReset restores any workloads previously enforced against gq's
