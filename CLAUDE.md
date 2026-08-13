@@ -251,6 +251,54 @@ workload created after the initial enforcement, or the same namespace being
 swept again on a later reconcile while still `Enforced`) append rather than
 duplicate.
 
+**Fixed bug: orphaned enforcement records.** Because restore trusts
+`status.enforcedResources` as its *only* source of truth, and a resource is
+only ever added to that list on the one reconcile where it's *newly*
+enforced (later reconciles correctly re-affirm zero via the resource's own
+`gpuquota.io/original-*` annotation without re-adding a tracking entry —
+see `enforceInferenceServices`'s `newlyCaptured`/`alreadyCaptured` comment),
+there used to be a narrow window where that one tracking write could be
+lost while the live enforcement action (zeroing + annotating the workload)
+had already happened. Two distinct ways this occurred, both observed live
+against the mock cluster in `../mock-openshift-cluster`:
+
+1. `EnforceNamespace` processes resource kinds in a fixed order (Deployments
+   → StatefulSets → ReplicaSets → JobSets → Jobs → InferenceServices →
+   Pods) and used to bail out on the very first kind's error, discarding
+   the `[]EnforcedResource` it had already accumulated for every
+   *earlier*-in-order kind that succeeded in the same call. E.g., a
+   transient conflict enforcing an InferenceService (common, since KServe's
+   own controller writes to the same object's status concurrently) would
+   drop the fact that a StatefulSet and ReplicaSet processed just before it
+   in that same pass had already been zeroed and annotated.
+2. Even when `EnforceNamespace` returned cleanly, `Reconcile` persisted the
+   merged `EnforcedResources` via a single unretried
+   `r.Status().Update(ctx, &gq)` at the very end. A resourceVersion
+   conflict there (e.g. a user concurrently `kubectl annotate`/`patch`-ing
+   the same `GpuQuota`) discarded the entire reconcile's status
+   changes — including any freshly-captured `EnforcedResources` entries —
+   even though the underlying workloads were already live-enforced.
+
+Once either happened, the resource was orphaned permanently: nothing
+re-derives `status.enforcedResources` from the live
+`gpuquota.io/original-*` annotations, so `gpuquota.io/reset` would report
+success (nothing in its list to restore) while the workload stayed scaled
+to zero forever, with no error ever surfaced again.
+
+Fixed by: `EnforceNamespace` now runs every resource kind regardless of an
+earlier kind's failure and always returns everything it acted on so far
+(joining any per-kind errors via `errors.Join` rather than returning on the
+first one); `Reconcile` merges that result into
+`gq.Status.EnforcedResources` *before* checking whether enforcement
+returned an error, instead of discarding the merge on error; and the final
+status write goes through `persistStatus`, which retries on conflict by
+re-fetching the latest object and reapplying the same (already fully
+computed, conflict-independent) desired status rather than giving up after
+one attempt. See `TestEnforceNamespace_ContinuesPastOneKindsFailure`,
+`TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries`, and
+`TestReconcile_StatusConflictIsRetriedNotDropped` for regression coverage
+of both failure modes.
+
 ### Optional CRDs
 
 JobSet and InferenceService are optional dependencies — if either CRD isn't

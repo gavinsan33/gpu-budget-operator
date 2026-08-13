@@ -6,6 +6,7 @@ package enforce
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -77,52 +78,41 @@ type Enforcer struct {
 // InferenceService, and deletes standalone GPU Pods (ones with no
 // controlling owner, since a bare Pod can't be scaled or suspended) in the
 // namespace. It returns the set of resources it acted on.
+//
+// It always attempts every resource kind, even after an earlier kind fails
+// (returning a combined error via errors.Join if any did) - and it always
+// returns every resource it successfully acted on so far, alongside that
+// error, rather than only the resources from kinds that succeeded before the
+// first failure. The caller MUST persist the returned slice regardless of
+// whether an error also came back: a resource kind failing here (e.g. a
+// transient resourceVersion conflict, common since some workload controllers
+// - KServe's, notably - write back to the same object's status concurrently)
+// used to make this function bail out immediately, discarding the fact that
+// earlier kinds in the same call had already been successfully scaled to
+// zero and annotated. The caller had no record that they were now enforced,
+// so a later gpuquota.io/reset found nothing to restore for them - the
+// workload just stayed at zero forever with no error ever surfaced.
 func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
 	var enforced []gpuquotav1alpha1.EnforcedResource
+	var errs []error
 
-	deployments, err := e.enforceDeployments(ctx, namespace)
-	if err != nil {
-		return enforced, err
+	for _, step := range []func(context.Context, string) ([]gpuquotav1alpha1.EnforcedResource, error){
+		e.enforceDeployments,
+		e.enforceStatefulSets,
+		e.enforceReplicaSets,
+		e.enforceJobSets,
+		e.enforceJobs,
+		e.enforceInferenceServices,
+		e.enforcePods,
+	} {
+		res, err := step(ctx, namespace)
+		enforced = append(enforced, res...)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
-	enforced = append(enforced, deployments...)
 
-	statefulSets, err := e.enforceStatefulSets(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, statefulSets...)
-
-	replicaSets, err := e.enforceReplicaSets(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, replicaSets...)
-
-	jobSets, err := e.enforceJobSets(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, jobSets...)
-
-	jobs, err := e.enforceJobs(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, jobs...)
-
-	inferenceServices, err := e.enforceInferenceServices(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, inferenceServices...)
-
-	pods, err := e.enforcePods(ctx, namespace)
-	if err != nil {
-		return enforced, err
-	}
-	enforced = append(enforced, pods...)
-
-	return enforced, nil
+	return enforced, errors.Join(errs...)
 }
 
 // RestoreNamespace reverses enforcement for every resource previously
