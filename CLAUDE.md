@@ -1,9 +1,9 @@
-# gpu-quota-operator
+# gpu-budget-operator
 
 ## Overview
 
 An operator that lets namespaces opt in to a cumulative GPU budget over a
-recurring calendar billing period. A namespace creates a `GpuQuota` custom
+recurring calendar billing period. A namespace creates a `GpuBudget` custom
 resource declaring `spec.period` (`Daily`/`Weekly`/`Monthly`) and at least
 one of `spec.gpuHoursLimit`/`spec.dollarsLimit`. The operator tracks
 cumulative GPU-hours (and, if priced, dollars) consumed since the period
@@ -11,18 +11,18 @@ started via Prometheus and, once either budget is exceeded, scales down
 GPU-consuming workloads (`Deployment`, `StatefulSet`, standalone
 `ReplicaSet`, `JobSet`, standalone `Job`, `InferenceService`, and standalone
 `Pod`) in that namespace. Enforcement is **never lifted automatically** -
-only a human clearing the `gpuquota.io/reset` annotation restores
+only a human clearing the `gpubudget.io/reset` annotation restores
 enforced workloads (see below).
 
 ## Architecture
 
-Single controller: `GpuQuotaReconciler` (`controllers/gpuquota-controller.go`)
-reconciles one `GpuQuota` object per pass, scoped to `GpuQuota.Namespace`.
-There is no cross-namespace state — each `GpuQuota` is fully independent, so
+Single controller: `GpuBudgetReconciler` (`controllers/gpubudget-controller.go`)
+reconciles one `GpuBudget` object per pass, scoped to `GpuBudget.Namespace`.
+There is no cross-namespace state — each `GpuBudget` is fully independent, so
 multiple teams' quotas can't interfere with each other.
 
 Reconcile pipeline per pass:
-1. If `gpuquota.io/reset` is set to `"true"`, restore any workloads
+1. If `gpubudget.io/reset` is set to `"true"`, restore any workloads
    in `status.enforcedResources`, clear enforcement state, and remove the
    annotation (`handleManualReset`) - before anything else, so a reset takes
    effect even if usage is still over budget (in which case the same pass
@@ -69,7 +69,7 @@ choice (confirmed with the user), not an oversight:
   addressed - it just means the counter reset. Auto-restoring on period
   rollover would silently let a namespace that blew its budget every single
   month keep doing so forever with no human ever noticing.
-- So the only trigger is explicit: `gpuquota.io/reset=true`. This
+- So the only trigger is explicit: `gpubudget.io/reset=true`. This
   also means an admin can use it as an "unlock and see what happens" tool
   after raising a limit - if usage is still over budget post-restore, the
   reconciler re-enforces in the same pass (see pipeline step 1 above),
@@ -97,7 +97,7 @@ genuinely absent; hard-error only if it's present but broken:
   target Prometheus doesn't require auth), the request goes out with no
   `Authorization` header instead of failing.
 - **TLS trust**: `buildTransport` always reads the fixed path
-  `serviceCACertFile` (`/etc/gpu-quota-operator/service-ca/service-ca.crt`)
+  `serviceCACertFile` (`/etc/gpu-budget-operator/service-ca/service-ca.crt`)
   and, if present, parses it into an `x509.CertPool` used as
   `tls.Config.RootCAs` on a clone of `http.DefaultTransport` (cloned, not
   built from scratch, to keep proxy/env-var support). If the file is
@@ -175,7 +175,7 @@ and StatefulSet reuse Deployment's; standalone Job reuses JobSet's), because
 none of them share a common scaling API:
 
 - **Deployment** (typed `appsv1`, vendored): `spec.replicas` set to 0.
-  Original value saved in annotation `gpuquota.io/original-replicas`
+  Original value saved in annotation `gpubudget.io/original-replicas`
   before zeroing, since a Deployment default-scaled at creation time to
   something other than 1 needs to restore to that value, not to 1.
 - **StatefulSet** (typed `appsv1`, vendored): identical mechanism to
@@ -200,7 +200,7 @@ none of them share a common scaling API:
   unstructured): `minReplicas`/`maxReplicas` set to `0` on every component
   present (`predictor`, `transformer`, `explainer`). Original per-component
   values are marshaled to JSON and stored in annotation
-  `gpuquota.io/original-replica-spec` — a `nil` original value
+  `gpubudget.io/original-replica-spec` — a `nil` original value
   means the field was unset (not "was 0"), and restore removes the field
   entirely in that case rather than writing back a literal 0. Zeroing both
   `minReplicas` and `maxReplicas` (not just `minReplicas`) matters because
@@ -208,7 +208,7 @@ none of them share a common scaling API:
   only the minimum is floored while max stays positive.
 - **Job** (typed `batchv1`, vendored), but only ones with **no
   `ownerReferences`**: same `spec.suspend` mechanism as JobSet, reusing the
-  `gpuquota.io/original-suspend` annotation. A JobSet's or
+  `gpubudget.io/original-suspend` annotation. A JobSet's or
   CronJob's child Job is skipped - suspending the JobSet already covers its
   Jobs, and a CronJob's Job is a single scheduled run that isn't yet handled
   (see "Known gaps" below). Only a *standalone* Job (created directly, e.g.
@@ -255,7 +255,7 @@ duplicate.
 `status.enforcedResources` as its *only* source of truth, and a resource is
 only ever added to that list on the one reconcile where it's *newly*
 enforced (later reconciles correctly re-affirm zero via the resource's own
-`gpuquota.io/original-*` annotation without re-adding a tracking entry —
+`gpubudget.io/original-*` annotation without re-adding a tracking entry —
 see `enforceInferenceServices`'s `newlyCaptured`/`alreadyCaptured` comment),
 there used to be a narrow window where that one tracking write could be
 lost while the live enforcement action (zeroing + annotating the workload)
@@ -273,15 +273,15 @@ against the mock cluster in `../mock-openshift-cluster`:
    in that same pass had already been zeroed and annotated.
 2. Even when `EnforceNamespace` returned cleanly, `Reconcile` persisted the
    merged `EnforcedResources` via a single unretried
-   `r.Status().Update(ctx, &gq)` at the very end. A resourceVersion
+   `r.Status().Update(ctx, &gb)` at the very end. A resourceVersion
    conflict there (e.g. a user concurrently `kubectl annotate`/`patch`-ing
-   the same `GpuQuota`) discarded the entire reconcile's status
+   the same `GpuBudget`) discarded the entire reconcile's status
    changes — including any freshly-captured `EnforcedResources` entries —
    even though the underlying workloads were already live-enforced.
 
 Once either happened, the resource was orphaned permanently: nothing
 re-derives `status.enforcedResources` from the live
-`gpuquota.io/original-*` annotations, so `gpuquota.io/reset` would report
+`gpubudget.io/original-*` annotations, so `gpubudget.io/reset` would report
 success (nothing in its list to restore) while the workload stayed scaled
 to zero forever, with no error ever surfaced again.
 
@@ -289,7 +289,7 @@ Fixed by: `EnforceNamespace` now runs every resource kind regardless of an
 earlier kind's failure and always returns everything it acted on so far
 (joining any per-kind errors via `errors.Join` rather than returning on the
 first one); `Reconcile` merges that result into
-`gq.Status.EnforcedResources` *before* checking whether enforcement
+`gb.Status.EnforcedResources` *before* checking whether enforcement
 returned an error, instead of discarding the merge on error; and the final
 status write goes through `persistStatus`, which retries on conflict by
 re-fetching the latest object and reapplying the same (already fully
@@ -313,7 +313,7 @@ See `TestRestoreNamespace_ContinuesPastOneEntrysFailure` and
 `TestRestoreNamespace_RetryAfterPartialFailureFinishesTheRest`.
 
 **Follow-up fix: sticky-enforcement signal.** `Reconcile`'s "is this
-namespace already enforced" check used to be `gq.Status.Phase ==
+namespace already enforced" check used to be `gb.Status.Phase ==
 PhaseEnforced`. `markFailed` (used for `PrometheusClientError`/
 `MetricsQueryFailed`/`UnpricedGPUType`) sets `Phase = PhaseUnknown`
 without touching `EnforcedResources` at all - and returns *before*
@@ -324,10 +324,10 @@ usage) would flip to `Unknown`, and if the failure cleared on a later
 reconcile with usage happening to read as back under budget, it would
 fall straight through to the `else` branch and become `Compliant` -
 never restoring the still-zeroed workload, since only a real
-`gpuquota.io/reset` does that, and clearing nothing from
+`gpubudget.io/reset` does that, and clearing nothing from
 `EnforcedResources` either (the `else` branch never touches it), leaving
 status internally inconsistent (`Compliant` with a stale non-empty
-`EnforcedResources`). The check is now `len(gq.Status.EnforcedResources)
+`EnforcedResources`). The check is now `len(gb.Status.EnforcedResources)
 > 0`, which `markFailed` never perturbs - true ground truth for "there's
 enforcement in effect that hasn't gone through reset yet." See
 `TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset`.
@@ -346,7 +346,7 @@ present on any Kubernetes cluster.
 - `make manifests` / `make generate` — regenerate `config/crd/*.yaml` and
   `v1alpha1/zz_generated.deepcopy.go` via `controller-gen` (auto-installed to
   `./bin/controller-gen`, pinned version in the Makefile). `manifests` passes
-  `crd:allowDangerousTypes=true`, since `GpuQuotaSpec`/`GpuQuotaStatus` use
+  `crd:allowDangerousTypes=true`, since `GpuBudgetSpec`/`GpuBudgetStatus` use
   `float64` for GPU-hours/dollar amounts and controller-gen otherwise refuses
   float fields (JSON-number precision varies across client languages).
 - `make fmt` / `make vet` / `make test`
@@ -367,10 +367,10 @@ present on any Kubernetes cluster.
 
 ## Code Structure
 
-- `v1alpha1/` — `GpuQuota` CRD Go types (period/budget spec, cumulative-usage
+- `v1alpha1/` — `GpuBudget` CRD Go types (period/budget spec, cumulative-usage
   status, `ResetAnnotation` constant), groupversion registration, generated
   deepcopy.
-- `controllers/gpuquota-controller.go` — the reconcile pipeline: query usage,
+- `controllers/gpubudget-controller.go` — the reconcile pipeline: query usage,
   price it, compare to budget, enforce/hold/restore.
 - `controllers/period.go` — `periodStart`: calendar-aligned (UTC) period
   boundary calculation for Daily/Weekly/Monthly.
@@ -408,7 +408,7 @@ present on any Kubernetes cluster.
     `image-registry.openshift-image-registry.svc:5000/...`). Applied
     repeatedly via `make deploy`.
 - `config/crd/` — generated CRD manifest only.
-- `samples/` — example `GpuQuota` CRs.
+- `samples/` — example `GpuBudget` CRs.
 
 ## Known gaps (not yet implemented)
 

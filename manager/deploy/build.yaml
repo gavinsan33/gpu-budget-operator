@@ -5,19 +5,19 @@
 apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
-  name: gpu-quota-operator
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator
+  namespace: gpu-budget-operator-system
 ---
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: gpu-quota-operator
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator
+  namespace: gpu-budget-operator-system
 spec:
   source:
     type: Git
     git:
-      uri: https://github.com/gavinsan33/gpu-quota-operator
+      uri: https://github.com/gavinsan33/gpu-budget-operator
       ref: master
   strategy:
     type: Docker
@@ -26,6 +26,6 @@ spec:
   output:
     to:
       kind: ImageStreamTag
-      name: gpu-quota-operator:latest
+      name: gpu-budget-operator:latest
   triggers:
   - type: ConfigChange

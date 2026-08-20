@@ -4,16 +4,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ResetAnnotation, when set to "true" on a GpuQuota, tells the operator to
+// ResetAnnotation, when set to "true" on a GpuBudget, tells the operator to
 // restore any workloads it enforced and clear enforcement state. This is the
 // only way enforcement is ever lifted - it is never automatic, not when
 // usage would otherwise be back under budget and not when a new period
 // starts, since cumulative usage never decreases within a period and a new
 // period alone doesn't mean the underlying cost problem was addressed. The
 // operator removes the annotation itself once processed.
-const ResetAnnotation = "gpuquota.io/reset"
+const ResetAnnotation = "gpubudget.io/reset"
 
-// BudgetPeriod is a calendar-aligned billing cycle a GpuQuota's budget
+// BudgetPeriod is a calendar-aligned billing cycle a GpuBudget's budget
 // resets on. These are fixed calendar boundaries, not rolling windows - e.g.
 // Monthly always resets on the 1st of the month, never "30 days before now."
 type BudgetPeriod string
@@ -24,10 +24,10 @@ const (
 	PeriodMonthly BudgetPeriod = "Monthly"
 )
 
-// GpuQuotaSpec defines a cumulative GPU budget for the namespace the
-// GpuQuota lives in, over a recurring calendar period.
+// GpuBudgetSpec defines a cumulative GPU budget for the namespace the
+// GpuBudget lives in, over a recurring calendar period.
 // +kubebuilder:validation:XValidation:rule="has(self.gpuHoursLimit) || has(self.dollarsLimit)",message="at least one of gpuHoursLimit or dollarsLimit must be set"
-type GpuQuotaSpec struct {
+type GpuBudgetSpec struct {
 	// Period is the calendar-aligned billing cycle the budget resets on.
 	// Daily starts at 00:00 UTC; Weekly starts Monday 00:00 UTC; Monthly
 	// starts on the 1st at 00:00 UTC.
@@ -74,13 +74,13 @@ type GpuQuotaSpec struct {
 	CheckInterval metav1.Duration `json:"checkInterval,omitempty"`
 }
 
-// GpuQuotaPhase summarizes the current enforcement state of the namespace.
-type GpuQuotaPhase string
+// GpuBudgetPhase summarizes the current enforcement state of the namespace.
+type GpuBudgetPhase string
 
 const (
-	PhaseCompliant GpuQuotaPhase = "Compliant"
-	PhaseEnforced  GpuQuotaPhase = "Enforced"
-	PhaseUnknown   GpuQuotaPhase = "Unknown"
+	PhaseCompliant GpuBudgetPhase = "Compliant"
+	PhaseEnforced  GpuBudgetPhase = "Enforced"
+	PhaseUnknown   GpuBudgetPhase = "Unknown"
 )
 
 // EnforcedResource records a single action taken against a workload.
@@ -104,9 +104,9 @@ type GPUTypeUsage struct {
 	GPUHours float64 `json:"gpuHours"`
 }
 
-// GpuQuotaStatus reports cumulative usage for the current period and any
+// GpuBudgetStatus reports cumulative usage for the current period and any
 // enforcement taken.
-type GpuQuotaStatus struct {
+type GpuBudgetStatus struct {
 	// CurrentPeriodStart is when the current billing period began.
 	// +optional
 	CurrentPeriodStart *metav1.Time `json:"currentPeriodStart,omitempty"`
@@ -127,7 +127,7 @@ type GpuQuotaStatus struct {
 	// Phase is the current enforcement state. Enforcement is never lifted
 	// automatically - see ResetAnnotation.
 	// +optional
-	Phase GpuQuotaPhase `json:"phase,omitempty"`
+	Phase GpuBudgetPhase `json:"phase,omitempty"`
 
 	// LastCheckedTime is when usage was last queried from Prometheus.
 	// +optional
@@ -154,23 +154,23 @@ type GpuQuotaStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=gq
+// +kubebuilder:resource:scope=Namespaced,shortName=gb
 // +kubebuilder:printcolumn:name="Period",type=string,JSONPath=".spec.period"
 // +kubebuilder:printcolumn:name="GPUHoursUsed",type=string,JSONPath=".status.gpuHoursUsed"
 // +kubebuilder:printcolumn:name="DollarsUsed",type=string,JSONPath=".status.dollarsUsed"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
-type GpuQuota struct {
+type GpuBudget struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   GpuQuotaSpec   `json:"spec,omitempty"`
-	Status GpuQuotaStatus `json:"status,omitempty"`
+	Spec   GpuBudgetSpec   `json:"spec,omitempty"`
+	Status GpuBudgetStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
-type GpuQuotaList struct {
+type GpuBudgetList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []GpuQuota `json:"items"`
+	Items           []GpuBudget `json:"items"`
 }

@@ -1,5 +1,5 @@
 // +kubebuilder:object:generate=true
-// +groupName=gpuquota.io
+// +groupName=gpubudget.io
 package v1alpha1
 
 import (
@@ -8,11 +8,11 @@ import (
 )
 
 var (
-	GroupVersion  = schema.GroupVersion{Group: "gpuquota.io", Version: "v1alpha1"}
+	GroupVersion  = schema.GroupVersion{Group: "gpubudget.io", Version: "v1alpha1"}
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 
 func init() {
-	SchemeBuilder.Register(&GpuQuota{}, &GpuQuotaList{})
+	SchemeBuilder.Register(&GpuBudget{}, &GpuBudgetList{})
 }

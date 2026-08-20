@@ -1,5 +1,5 @@
 // Package enforce scales down (and, when unscalable, deletes) GPU-consuming
-// workloads in a namespace that has exceeded its GpuQuota, and restores them
+// workloads in a namespace that has exceeded its GpuBudget, and restores them
 // once usage falls back within budget.
 package enforce
 
@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	gpuquotav1alpha1 "github.com/gsanders/gpu-quota-operator/v1alpha1"
+	gpubudgetv1alpha1 "github.com/gsanders/gpu-budget-operator/v1alpha1"
 )
 
 const (
@@ -30,15 +30,15 @@ const (
 	// AnnotationOriginalReplicas remembers a Deployment's, StatefulSet's, or
 	// standalone ReplicaSet's replica count before it was scaled to zero, so
 	// it can be restored later.
-	AnnotationOriginalReplicas = "gpuquota.io/original-replicas"
+	AnnotationOriginalReplicas = "gpubudget.io/original-replicas"
 
 	// AnnotationOriginalReplicaSpec remembers an InferenceService component's
 	// original min/max replicas as JSON before it was zeroed out.
-	AnnotationOriginalReplicaSpec = "gpuquota.io/original-replica-spec"
+	AnnotationOriginalReplicaSpec = "gpubudget.io/original-replica-spec"
 
 	// AnnotationOriginalSuspend remembers a JobSet's or standalone Job's
 	// original suspend value.
-	AnnotationOriginalSuspend = "gpuquota.io/original-suspend"
+	AnnotationOriginalSuspend = "gpubudget.io/original-suspend"
 
 	ActionScaledToZero = "ScaledToZero"
 	ActionSuspended    = "Suspended"
@@ -90,13 +90,13 @@ type Enforcer struct {
 // used to make this function bail out immediately, discarding the fact that
 // earlier kinds in the same call had already been successfully scaled to
 // zero and annotated. The caller had no record that they were now enforced,
-// so a later gpuquota.io/reset found nothing to restore for them - the
+// so a later gpubudget.io/reset found nothing to restore for them - the
 // workload just stayed at zero forever with no error ever surfaced.
-func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
-	var enforced []gpuquotav1alpha1.EnforcedResource
+func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	var errs []error
 
-	for _, step := range []func(context.Context, string) ([]gpuquotav1alpha1.EnforcedResource, error){
+	for _, step := range []func(context.Context, string) ([]gpubudgetv1alpha1.EnforcedResource, error){
 		e.enforceDeployments,
 		e.enforceStatefulSets,
 		e.enforceReplicaSets,
@@ -130,7 +130,7 @@ func (e *Enforcer) EnforceNamespace(ctx context.Context, namespace string) ([]gp
 // retries the same (unrestored) list in the same order after any error.
 // Restoring the rest first and surfacing one combined failure gets everything
 // restorable actually restored, rather than nothing past the first snag.
-func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enforcedResources []gpuquotav1alpha1.EnforcedResource) error {
+func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enforcedResources []gpubudgetv1alpha1.EnforcedResource) error {
 	var errs []error
 	for _, res := range enforcedResources {
 		var err error
@@ -159,13 +159,13 @@ func (e *Enforcer) RestoreNamespace(ctx context.Context, namespace string, enfor
 	return errors.Join(errs...)
 }
 
-func (e *Enforcer) enforceDeployments(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceDeployments(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	var list appsv1.DeploymentList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing deployments in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		dep := &list.Items[i]
 		if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
@@ -189,7 +189,7 @@ func (e *Enforcer) enforceDeployments(ctx context.Context, namespace string) ([]
 		if err := e.Client.Update(ctx, dep); err != nil {
 			return enforced, fmt.Errorf("scaling deployment %s/%s to zero: %w", namespace, dep.Name, err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: "apps/v1",
 			Kind:       "Deployment",
 			Name:       dep.Name,
@@ -231,13 +231,13 @@ func (e *Enforcer) restoreDeployment(ctx context.Context, namespace, name string
 // mirroring enforceDeployments. Unlike ReplicaSet there's no vanilla
 // higher-level controller that owns a StatefulSet, so (unlike ReplicaSets)
 // no owner-reference check is needed here.
-func (e *Enforcer) enforceStatefulSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceStatefulSets(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	var list appsv1.StatefulSetList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing statefulsets in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		sts := &list.Items[i]
 		if sts.Spec.Replicas != nil && *sts.Spec.Replicas == 0 {
@@ -261,7 +261,7 @@ func (e *Enforcer) enforceStatefulSets(ctx context.Context, namespace string) ([
 		if err := e.Client.Update(ctx, sts); err != nil {
 			return enforced, fmt.Errorf("scaling statefulset %s/%s to zero: %w", namespace, sts.Name, err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: "apps/v1",
 			Kind:       "StatefulSet",
 			Name:       sts.Name,
@@ -293,13 +293,13 @@ func (e *Enforcer) restoreStatefulSet(ctx context.Context, namespace, name strin
 	return e.Client.Update(ctx, &sts)
 }
 
-func (e *Enforcer) enforceReplicaSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceReplicaSets(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	var list appsv1.ReplicaSetList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing replicasets in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		rs := &list.Items[i]
 		if len(rs.OwnerReferences) > 0 {
@@ -326,7 +326,7 @@ func (e *Enforcer) enforceReplicaSets(ctx context.Context, namespace string) ([]
 		if err := e.Client.Update(ctx, rs); err != nil {
 			return enforced, fmt.Errorf("scaling replicaset %s/%s to zero: %w", namespace, rs.Name, err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: "apps/v1",
 			Kind:       "ReplicaSet",
 			Name:       rs.Name,
@@ -358,7 +358,7 @@ func (e *Enforcer) restoreReplicaSet(ctx context.Context, namespace, name string
 	return e.Client.Update(ctx, &rs)
 }
 
-func (e *Enforcer) enforceJobSets(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceJobSets(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(jobSetListGVK)
 	if err := e.Client.List(ctx, list, client.InNamespace(namespace)); err != nil {
@@ -368,7 +368,7 @@ func (e *Enforcer) enforceJobSets(ctx context.Context, namespace string) ([]gpuq
 		return nil, fmt.Errorf("listing jobsets in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		obj := &list.Items[i]
 		suspended, found, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
@@ -392,7 +392,7 @@ func (e *Enforcer) enforceJobSets(ctx context.Context, namespace string) ([]gpuq
 		if err := e.Client.Update(ctx, obj); err != nil {
 			return enforced, fmt.Errorf("suspending jobset %s/%s: %w", namespace, obj.GetName(), err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: jobSetGVK.GroupVersion().String(),
 			Kind:       jobSetGVK.Kind,
 			Name:       obj.GetName(),
@@ -432,13 +432,13 @@ func (e *Enforcer) restoreJobSet(ctx context.Context, namespace, name string) er
 // child Job is already covered by suspending the JobSet, and a CronJob's
 // child Job is a single run that should complete or be handled by
 // suspending the CronJob (a future enhancement) rather than fought here.
-func (e *Enforcer) enforceJobs(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceJobs(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	var list batchv1.JobList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing jobs in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		job := &list.Items[i]
 		if len(job.OwnerReferences) > 0 {
@@ -461,7 +461,7 @@ func (e *Enforcer) enforceJobs(ctx context.Context, namespace string) ([]gpuquot
 		if err := e.Client.Update(ctx, job); err != nil {
 			return enforced, fmt.Errorf("suspending job %s/%s: %w", namespace, job.Name, err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: "batch/v1",
 			Kind:       "Job",
 			Name:       job.Name,
@@ -490,7 +490,7 @@ func (e *Enforcer) restoreJob(ctx context.Context, namespace, name string) error
 	return e.Client.Update(ctx, &job)
 }
 
-func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(inferenceServiceListGVK)
 	if err := e.Client.List(ctx, list, client.InNamespace(namespace)); err != nil {
@@ -500,7 +500,7 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 		return nil, fmt.Errorf("listing inferenceservices in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		obj := &list.Items[i]
 		if !unstructuredRequestsGPU(obj.Object) {
@@ -516,7 +516,7 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 		// maxReplicas=absent, wrongly conclude this component was never
 		// enforced, and re-capture that already-zeroed state as if it were
 		// the original - permanently losing the real original before
-		// gpuquota.io/reset ever gets a chance to use it.
+		// gpubudget.io/reset ever gets a chance to use it.
 		annotations := obj.GetAnnotations()
 		original := map[string]componentReplicaSpec{}
 		if raw, ok := annotations[AnnotationOriginalReplicaSpec]; ok {
@@ -581,7 +581,7 @@ func (e *Enforcer) enforceInferenceServices(ctx context.Context, namespace strin
 			return enforced, fmt.Errorf("zeroing inferenceservice %s/%s: %w", namespace, obj.GetName(), err)
 		}
 		if newlyCaptured {
-			enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+			enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 				APIVersion: inferenceServiceGVK.GroupVersion().String(),
 				Kind:       inferenceServiceGVK.Kind,
 				Name:       obj.GetName(),
@@ -643,13 +643,13 @@ func (e *Enforcer) restoreInferenceService(ctx context.Context, namespace, name 
 // controller would just cause an immediate, pointless recreation. Deletion
 // is the only "scale to zero" primitive available for a bare Pod, and it is
 // NOT reversible - restoring a deleted Pod is not attempted.
-func (e *Enforcer) enforcePods(ctx context.Context, namespace string) ([]gpuquotav1alpha1.EnforcedResource, error) {
+func (e *Enforcer) enforcePods(ctx context.Context, namespace string) ([]gpubudgetv1alpha1.EnforcedResource, error) {
 	var list corev1.PodList
 	if err := e.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing pods in %s: %w", namespace, err)
 	}
 
-	var enforced []gpuquotav1alpha1.EnforcedResource
+	var enforced []gpubudgetv1alpha1.EnforcedResource
 	for i := range list.Items {
 		pod := &list.Items[i]
 		if len(pod.OwnerReferences) > 0 {
@@ -668,7 +668,7 @@ func (e *Enforcer) enforcePods(ctx context.Context, namespace string) ([]gpuquot
 			}
 			return enforced, fmt.Errorf("deleting pod %s/%s: %w", namespace, pod.Name, err)
 		}
-		enforced = append(enforced, gpuquotav1alpha1.EnforcedResource{
+		enforced = append(enforced, gpubudgetv1alpha1.EnforcedResource{
 			APIVersion: "v1",
 			Kind:       "Pod",
 			Name:       pod.Name,

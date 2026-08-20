@@ -2,7 +2,7 @@
 # Deployment-owned ReplicaSet is deliberately skipped - the Deployment
 # itself is the correct thing to enforce). This one is created directly, not
 # via a Deployment, so it qualifies. Same spec.replicas -> 0 mechanism,
-# reusing gpuquota.io/original-replicas.
+# reusing gpubudget.io/original-replicas.
 apiVersion: apps/v1
 kind: ReplicaSet
 metadata:

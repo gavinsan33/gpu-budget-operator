@@ -1,5 +1,5 @@
-apiVersion: gpuquota.io/v1alpha1
-kind: GpuQuota
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudget
 metadata:
   name: team-b-quota
   namespace: team-b
@@ -12,7 +12,7 @@ spec:
   dollarsLimit: 5000
   # Override the default reservation-based accounting query, e.g. to switch
   # to DCGM utilization-based GPU-hours instead. Must return one sample per
-  # GPU type, labeled "gpuType". (Every GpuQuota is evaluated against the
+  # GPU type, labeled "gpuType". (Every GpuBudget is evaluated against the
   # same operator-wide Prometheus - see --prometheus-url - only the query
   # itself is overridable per-namespace.)
   query: |

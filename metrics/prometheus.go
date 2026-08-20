@@ -92,7 +92,7 @@ type Client struct {
 // dev Prometheus that doesn't require auth), the client falls back to no
 // custom CA / no Authorization header respectively, rather than erroring.
 var (
-	serviceCACertFile       = "/etc/gpu-quota-operator/service-ca/service-ca.crt"
+	serviceCACertFile       = "/etc/gpu-budget-operator/service-ca/service-ca.crt"
 	serviceAccountTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 )
 

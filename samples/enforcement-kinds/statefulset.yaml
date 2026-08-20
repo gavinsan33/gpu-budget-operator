@@ -1,5 +1,5 @@
 # enforce.go: identical mechanism to Deployment (spec.replicas -> 0, same
-# gpuquota.io/original-replicas annotation). No owner-reference check needed
+# gpubudget.io/original-replicas annotation). No owner-reference check needed
 # - nothing above a StatefulSet in a vanilla ownership chain.
 apiVersion: v1
 kind: Service

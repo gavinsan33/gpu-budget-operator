@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: gpu-quota-operator-service-ca
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator-service-ca
+  namespace: gpu-budget-operator-system
   annotations:
     service.beta.openshift.io/inject-cabundle: "true"

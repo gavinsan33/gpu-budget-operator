@@ -15,8 +15,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: gpu-quota-operator-controller-manager
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator-controller-manager
+  namespace: gpu-budget-operator-system
   labels:
     control-plane: controller-manager
 spec:
@@ -29,10 +29,10 @@ spec:
       labels:
         control-plane: controller-manager
     spec:
-      serviceAccountName: gpu-quota-operator-controller-manager
+      serviceAccountName: gpu-budget-operator-controller-manager
       containers:
       - name: manager
-        image: localhost/gpu-quota-operator:dev
+        image: localhost/gpu-budget-operator:dev
         imagePullPolicy: IfNotPresent
         command:
         - /manager
