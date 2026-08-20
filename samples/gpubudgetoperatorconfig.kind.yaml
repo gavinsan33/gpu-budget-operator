@@ -1,0 +1,17 @@
+# A non-OpenShift substitute for gpubudgetoperatorconfig.yaml, matching
+# manager/deploy/deployment.kind.yaml's target cluster: this mock cluster's
+# own Prometheus Service directly (plain HTTP, no auth), not OpenShift's
+# Thanos Querier.
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudgetOperatorConfig
+metadata:
+  name: cluster
+spec:
+  prometheusURL: http://prometheus.monitoring.svc:9090
+  gpuRates:
+  - family: A100
+    dollarsPerGPUHour: 1.70
+  - family: H100
+    dollarsPerGPUHour: 1.10
+  - family: V100
+    dollarsPerGPUHour: 0.30

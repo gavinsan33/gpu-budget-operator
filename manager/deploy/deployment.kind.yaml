@@ -4,8 +4,10 @@
 # Differences from deployment.yaml:
 #   - image is a locally built+kind-loaded tag, not the OpenShift internal
 #     registry (build.yaml's BuildConfig/ImageStream don't exist here)
-#   - --prometheus-url points at this cluster's own Prometheus Service
-#     directly (plain HTTP, no auth) instead of OpenShift's Thanos Querier
+#   - the GpuBudgetOperatorConfig you apply alongside this (see
+#     samples/gpubudgetoperatorconfig.yaml) should point spec.prometheusURL
+#     at this cluster's own Prometheus Service directly (plain HTTP, no
+#     auth) instead of OpenShift's Thanos Querier
 #   - no service-ca volume/mount - nothing here populates it, and the
 #     operator already falls back to the system trust store when the CA
 #     file is simply absent (see metrics/prometheus.go)
@@ -36,11 +38,6 @@ spec:
         imagePullPolicy: IfNotPresent
         command:
         - /manager
-        args:
-        - --prometheus-url=http://prometheus.monitoring.svc:9090
-        - --gpu-rate=A100=1.70
-        - --gpu-rate=H100=1.10
-        - --gpu-rate=V100=0.30
         resources:
           limits:
             cpu: 500m

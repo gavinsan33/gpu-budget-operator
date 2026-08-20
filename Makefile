@@ -75,14 +75,15 @@ run: fmt vet ## Run from your host (requires cluster access).
 # registry (manager/deploy/deployment.yaml's image field). `kind-image`
 # builds locally and loads the result directly into the kind node instead
 # of pushing anywhere. manager/deploy/deployment.kind.yaml is the
-# corresponding stand-in for deployment.yaml: local image tag,
-# --prometheus-url pointing at this cluster's own Prometheus Service
-# directly, no service-ca mount (nothing here populates it, and the
-# operator already falls back to the system trust store when that file is
-# simply absent), and no --leader-elect (single replica for local testing;
-# there's also no RBAC anywhere in this repo for the coordination.k8s.io
-# Lease that flag needs - a real gap even on OpenShift, not specific to
-# kind, tracked separately).
+# corresponding stand-in for deployment.yaml: local image tag, no
+# service-ca mount (nothing here populates it, and the operator already
+# falls back to the system trust store when that file is simply absent),
+# and no --leader-elect (single replica for local testing; there's also no
+# RBAC anywhere in this repo for the coordination.k8s.io Lease that flag
+# needs - a real gap even on OpenShift, not specific to kind, tracked
+# separately). samples/gpubudgetoperatorconfig.kind.yaml is the
+# corresponding stand-in for samples/gpubudgetoperatorconfig.yaml, pointing
+# spec.prometheusURL at this cluster's own Prometheus Service directly.
 #
 # Cluster lifecycle (create/delete the kind cluster, KSM/Prometheus/mock
 # DCGM, fake GPU node capacity, CRD install) is handled directly in the
@@ -114,6 +115,7 @@ kind-deploy: manifests kind-image ## Build+load the image, then deploy (or redep
 	oc apply -f manager/bootstrap/role_binding.yaml
 	oc apply -f manager/deploy/service_account.yaml
 	oc apply -f manager/deploy/deployment.kind.yaml
+	oc apply -f samples/gpubudgetoperatorconfig.kind.yaml
 	oc -n gpu-budget-operator-system rollout restart deployment/gpu-budget-operator-controller-manager
 	oc -n gpu-budget-operator-system rollout status deployment/gpu-budget-operator-controller-manager --timeout=120s
 

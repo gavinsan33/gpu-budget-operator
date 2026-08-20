@@ -69,10 +69,10 @@ spec:
                 description: |-
                   DollarsLimit is the max cumulative cost, in USD, allowed within the
                   current period, computed from GPU-hours-by-type (see Query) and the
-                  operator's configured per-GPU-family hourly rates (one or more
-                  --gpu-rate=<family>=<usd> flags, e.g. --gpu-rate=A100=1.70). At least
-                  one of GPUHoursLimit/DollarsLimit must be set; if both are set,
-                  whichever is exceeded first triggers enforcement.
+                  operator's configured per-GPU-family hourly rates
+                  (GpuBudgetOperatorConfig's spec.gpuRates). At least one of
+                  GPUHoursLimit/DollarsLimit must be set; if both are set, whichever is
+                  exceeded first triggers enforcement.
                 type: number
               gpuHoursLimit:
                 description: |-

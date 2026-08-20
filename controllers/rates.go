@@ -1,18 +1,33 @@
 package controllers
 
-import "strings"
+import (
+	"strings"
+
+	gpubudgetv1alpha1 "github.com/gsanders/gpu-budget-operator/v1alpha1"
+)
 
 // GPURates maps a GPU family name (e.g. "A100", "H100") to its USD-per-
-// GPU-hour rate, set once via one or more --gpu-rate=<family>=<usd> flags
-// (see main.go) - keys are stored upper-cased. There is no per-namespace
+// GPU-hour rate - keys are stored upper-cased. There is no per-namespace
 // override - rates are a finance/org decision, not something individual
 // namespaces should set for themselves.
 //
 // Using a map instead of one struct field per family means adding a rate
-// for a new GPU type, or changing an existing one, is purely a deployment
-// manifest change (another --gpu-rate=<family>=<usd> flag) - it never
-// requires touching this file or rebuilding the operator.
+// for a new GPU type, or changing an existing one, is purely a
+// GpuBudgetOperatorConfig edit - it never requires touching this file or
+// rebuilding the operator.
 type GPURates map[string]float64
+
+// ratesFromSpec converts a GpuBudgetOperatorConfig's spec.gpuRates list into
+// a GPURates lookup table. A later entry for the same family (case-
+// insensitively) overwrites an earlier one, matching how a repeated
+// --gpu-rate flag used to behave.
+func ratesFromSpec(entries []gpubudgetv1alpha1.GPURate) GPURates {
+	rates := make(GPURates, len(entries))
+	for _, e := range entries {
+		rates[strings.ToUpper(e.Family)] = e.DollarsPerGPUHour
+	}
+	return rates
+}
 
 // RateFor returns the USD-per-GPU-hour rate for gpuType and whether it's
 // configured. A zero/unset rate is treated as "not configured" rather than

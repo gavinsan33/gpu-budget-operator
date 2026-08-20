@@ -30,6 +30,14 @@ rules:
   verbs:
   - update
 - apiGroups:
+  - gpubudget.io
+  resources:
+  - gpubudgetoperatorconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments

@@ -29,22 +29,12 @@ spec:
         - /manager
         args:
         - --leader-elect
-        # The one, cluster-wide Prometheus every GpuBudget is evaluated
-        # against - there is no per-namespace override. Auth (Bearer token)
-        # and TLS trust (the mounted CA bundle below, or the system trust
-        # store if absent) are always automatic, with no flag to change
-        # either. This default targets OpenShift's built-in monitoring
-        # stack, which requires the cluster-monitoring-view
-        # ClusterRoleBinding (../bootstrap/monitoring_rolebinding.yaml).
-        - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
-        # $/GPU-hour rates, only required if any GpuBudget sets spec.dollarsLimit
-        # and actually uses that GPU family - REPLACE these placeholder values
-        # with your real rates before relying on dollarsLimit enforcement.
-        # Repeatable: add another --gpu-rate=<family>=<usd> for any GPU family
-        # not listed here (e.g. B200) - no code change or rebuild required.
-        - --gpu-rate=A100=1.70
-        - --gpu-rate=H100=1.10
-        - --gpu-rate=V100=0.30
+        # The cluster-wide Prometheus URL and per-GPU-family $/GPU-hour
+        # rates every GpuBudget is evaluated against are NOT flags here -
+        # they come from the singleton GpuBudgetOperatorConfig (named
+        # "cluster") the operator watches at runtime. Apply
+        # samples/gpubudgetoperatorconfig.yaml (edited for your cluster's
+        # Prometheus/rates) after deploying - see README's "Install".
         volumeMounts:
         - name: service-ca
           mountPath: /etc/gpu-budget-operator/service-ca
