@@ -19,7 +19,7 @@ enforced workloads (see below).
 Single controller: `GpuBudgetReconciler` (`controllers/gpubudget-controller.go`)
 reconciles one `GpuBudget` object per pass, scoped to `GpuBudget.Namespace`.
 There is no cross-namespace state — each `GpuBudget` is fully independent, so
-multiple teams' quotas can't interfere with each other.
+multiple teams' budgets can't interfere with each other.
 
 Reconcile pipeline per pass:
 1. If `gpubudget.io/reset` is set to `"true"`, restore any workloads
@@ -59,7 +59,7 @@ Reconcile pipeline per pass:
 ### Why enforcement only ever escalates, never auto-resolves
 
 This is the single biggest behavioral difference from a typical
-instantaneous-threshold quota controller, and it's a deliberate design
+instantaneous-threshold budget controller, and it's a deliberate design
 choice (confirmed with the user), not an oversight:
 
 - Cumulative GPU-hours/dollars **only increase** within a period - there's
@@ -149,7 +149,7 @@ behind that kind of federation, override `spec.query` with a plain
 `namespace` label instead. `spec.query` exists specifically so any of this
 is swappable per-namespace without any code or CRD change - e.g. to switch
 to DCGM utilization-based accounting instead (see
-`samples/team-b-quota-custom-query.yaml` for a worked example query). Any
+`samples/team-b-budget-custom-query.yaml` for a worked example query). Any
 override must still return one vector sample per GPU type, labeled
 `gpuType`, with a value matching a rate key (`a100`/`h100`/`v100`,
 case-insensitive) - see `metrics.GPUHoursByType`.
@@ -422,7 +422,7 @@ present on any Kubernetes cluster.
 - **DaemonSet**: intentionally never enforced. DaemonSets have no replica
   concept and are almost always infra (the NVIDIA device plugin,
   `dcgm-exporter` itself) - scaling/deleting one would break GPU visibility
-  or scheduling cluster-wide rather than free up quota.
+  or scheduling cluster-wide rather than free up budget.
 - **Default query's node-label assumption**: `DefaultGPUHoursQueryTemplate`
   assumes a specific kube-state-metrics node-label allowlist config that
   varies per cluster (see "GPU-hours accounting" above) - it's a

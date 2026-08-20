@@ -1,7 +1,7 @@
 apiVersion: gpubudget.io/v1alpha1
 kind: GpuBudget
 metadata:
-  name: gavin-test-quota
+  name: gavin-test-budget
   namespace: gavin-test
 spec:
   period: Monthly

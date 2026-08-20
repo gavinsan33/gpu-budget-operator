@@ -1,7 +1,7 @@
 apiVersion: gpubudget.io/v1alpha1
 kind: GpuBudget
 metadata:
-  name: demo-quota
+  name: demo-budget
   namespace: demo
 spec:
   period: Daily

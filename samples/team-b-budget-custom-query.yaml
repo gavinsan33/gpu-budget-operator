@@ -1,7 +1,7 @@
 apiVersion: gpubudget.io/v1alpha1
 kind: GpuBudget
 metadata:
-  name: team-b-quota
+  name: team-b-budget
   namespace: team-b
 spec:
   period: Weekly

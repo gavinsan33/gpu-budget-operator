@@ -32,7 +32,7 @@ independently against the same namespace's workloads.
 | `period` | string (`Daily`/`Weekly`/`Monthly`) | *(required)* | The calendar-aligned billing cycle the budget resets on. `Daily` starts at 00:00 UTC; `Weekly` starts Monday 00:00 UTC; `Monthly` starts on the 1st at 00:00 UTC. These are fixed calendar boundaries, **not** rolling windows — `Monthly` always resets on the 1st, never "30 days before now." |
 | `gpuHoursLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative GPU-hours, summed across all GPU types, allowed within the current period. |
 | `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the operator's `--gpu-rate=<family>=<usd>` flags. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
-| `query` | string | reservation-based default (see below) | Overrides the PromQL used to compute cumulative GPU-hours consumed since the period started, broken out by GPU type. Must return one sample per GPU type, each labeled `gpuType` with a value matching a rate key (`a100`/`h100`/`v100`, case-insensitive). `__NAMESPACE__`, `__RANGE__`, and `__RANGE_HOURS__` are substituted with the namespace, a PromQL range duration, and that same range as a plain hour count, respectively. Override this to switch accounting methodologies (e.g. DCGM utilization-based instead of reservation-based) without any code or CRD change — see `samples/team-b-quota-custom-query.yaml`. |
+| `query` | string | reservation-based default (see below) | Overrides the PromQL used to compute cumulative GPU-hours consumed since the period started, broken out by GPU type. Must return one sample per GPU type, each labeled `gpuType` with a value matching a rate key (`a100`/`h100`/`v100`, case-insensitive). `__NAMESPACE__`, `__RANGE__`, and `__RANGE_HOURS__` are substituted with the namespace, a PromQL range duration, and that same range as a plain hour count, respectively. Override this to switch accounting methodologies (e.g. DCGM utilization-based instead of reservation-based) without any code or CRD change — see `samples/team-b-budget-custom-query.yaml`. |
 | `checkInterval` | duration | `15m` | How often cumulative usage is re-evaluated. Defaults to 15m to match typical GPU-cluster billing granularity - checking more often than billing itself updates doesn't surface anything new. |
 
 ### status fields
@@ -55,7 +55,7 @@ independently against the same namespace's workloads.
 apiVersion: gpubudget.io/v1alpha1
 kind: GpuBudget
 metadata:
-  name: gavin-test-quota
+  name: gavin-test-budget
   namespace: gavin-test
 spec:
   period: Monthly       # resets on the 1st of the month, 00:00 UTC
@@ -90,7 +90,7 @@ restore enforced workloads is to set the `gpubudget.io/reset`
 annotation to `"true"` on the `GpuBudget`:
 
 ```
-oc annotate gpubudget gavin-test-quota -n gavin-test gpubudget.io/reset=true
+oc annotate gpubudget gavin-test-budget -n gavin-test gpubudget.io/reset=true
 ```
 
 The operator restores everything in `status.enforcedResources` to its
@@ -259,7 +259,7 @@ an unauthenticated request both happen automatically.
    repeatedly — see `make build-image` if you just want to rebuild without a
    full redeploy.
 7. Apply a `GpuBudget` in any namespace you want monitored, e.g.
-   `oc apply -f samples/gavin-test-quota.yaml`.
+   `oc apply -f samples/gavin-test-budget.yaml`.
 
 ## Uninstall
 

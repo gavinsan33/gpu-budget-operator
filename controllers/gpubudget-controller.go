@@ -36,7 +36,7 @@ type GpuBudgetReconciler struct {
 	// every GpuBudget is evaluated against. Set once via the operator's
 	// --prometheus-url flag - there is no per-namespace override, since
 	// splitting GPU accounting across multiple Prometheus instances would
-	// make quotas impossible to compare or reason about cluster-wide.
+	// make budgets impossible to compare or reason about cluster-wide.
 	PrometheusURL string
 
 	// GPURates is the operator-wide $/GPU-hour rate table used to compute
@@ -167,7 +167,7 @@ func (r *GpuBudgetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("updating status for %s/%s: %w", gb.Namespace, gb.Name, err)
 	}
 	if enforceErr != nil {
-		return ctrl.Result{}, fmt.Errorf("enforcing quota in namespace %s: %w", gb.Namespace, enforceErr)
+		return ctrl.Result{}, fmt.Errorf("enforcing budget in namespace %s: %w", gb.Namespace, enforceErr)
 	}
 
 	logger.V(1).Info("reconciled GpuBudget", "namespace", gb.Namespace, "gpuHours", totalHours, "dollars", totalDollars, "phase", gb.Status.Phase)

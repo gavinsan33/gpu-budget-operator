@@ -13,7 +13,7 @@ spec:
   checkInterval: 1m
   # This mock cluster's Prometheus isn't behind ACM-hub federation, so its
   # metrics carry a plain "namespace" label rather than "exported_namespace"
-  # - see samples/demo-quota.yaml / CLAUDE.md's "GPU-hours accounting".
+  # - see samples/demo-budget.yaml / CLAUDE.md's "GPU-hours accounting".
   query: |
     label_replace(
       sum by (product) (

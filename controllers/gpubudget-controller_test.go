@@ -216,7 +216,7 @@ func TestReconcile_UnderBudgetDoesNotEnforce(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -263,7 +263,7 @@ func TestReconcile_OverGPUHoursLimitEnforcesImmediately(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -305,7 +305,7 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(100),
@@ -345,7 +345,7 @@ func TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName(t *testing.T) {
 
 	scheme := newScheme(t)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(100),
@@ -376,7 +376,7 @@ func TestReconcile_UnpricedGPUTypeWithDollarsLimitFailsLoudly(t *testing.T) {
 
 	scheme := newScheme(t)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
@@ -403,7 +403,7 @@ func TestReconcile_UnpricedGPUTypeWithDollarsLimitFailsLoudly(t *testing.T) {
 }
 
 // TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction confirms a fresh
-// (never-enforced) quota that immediately hits an unpriced GPU type doesn't
+// (never-enforced) budget that immediately hits an unpriced GPU type doesn't
 // touch any workload - markFailed returns before ever reaching the
 // enforcement decision at all.
 func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
@@ -413,7 +413,7 @@ func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
@@ -447,7 +447,7 @@ func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
 }
 
 // TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant covers the
-// simple recovery path: a never-enforced quota hits an unpriced type
+// simple recovery path: a never-enforced budget hits an unpriced type
 // (Unknown), then a later reconcile with the rate now configured and usage
 // under budget resolves cleanly to Compliant.
 func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
@@ -456,7 +456,7 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 
 	scheme := newScheme(t)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
@@ -499,7 +499,7 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 // unpriced GPU type, transiently fails with Phase=Unknown (via markFailed) -
 // but that failure must NOT lose track of the already-zeroed workload. Once
 // the rate gets configured and usage happens to read as back under budget,
-// the quota must still report Enforced (and the workload must still be at
+// the budget must still report Enforced (and the workload must still be at
 // 0 replicas) rather than silently flipping to Compliant with nothing ever
 // having gone through gpubudget.io/reset. Keying stickiness off Phase alone
 // (instead of len(EnforcedResources) > 0) would make this test fail, since
@@ -511,7 +511,7 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -604,7 +604,7 @@ func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -674,7 +674,7 @@ func TestReconcile_ResetAnnotationRestoresAndClearsEnforcement(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -738,7 +738,7 @@ func TestReconcile_ResetAnnotationRestoresFullyWhenBackUnderBudget(t *testing.T)
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -789,7 +789,7 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	barePod := gpuPod("gavin-test", "bare-gpu-pod", false)
 	ownedPod := gpuPod("gavin-test", "owned-gpu-pod", true)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -833,7 +833,7 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	standaloneRS := gpuReplicaSet("gavin-test", "standalone-rs", 3, false)
 	ownedRS := gpuReplicaSet("gavin-test", "owned-rs", 3, true)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -873,7 +873,7 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	scheme := newScheme(t)
 	sts := gpuStatefulSet("gavin-test", "training", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -906,7 +906,7 @@ func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
 	standaloneJob := gpuJob("gavin-test", "standalone-job", false)
 	ownedJob := gpuJob("gavin-test", "owned-job", true)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -944,7 +944,7 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	dep := gpuDeployment("gavin-test", "plain", 3)
 	dep.Spec.Template.Spec.Containers[0].Resources.Requests = nil // strip the GPU request
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -983,7 +983,7 @@ func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing
 	dep := gpuDeployment("gavin-test", "model", 3)
 	sts := gpuStatefulSet("gavin-test", "training", 1)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -1049,7 +1049,7 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -1089,8 +1089,8 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 }
 
 // TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement covers the
-// first half of a real "reapply the quota, then reset" workflow: raising
-// spec.GPUHoursLimit (simulating `oc apply -f quota.yaml` with a bigger
+// first half of a real "reapply the budget, then reset" workflow: raising
+// spec.GPUHoursLimit (simulating `oc apply -f budget.yaml` with a bigger
 // number) via a plain spec Update, with NO reset annotation, must not lift
 // enforcement by itself even though usage is now back under the new limit -
 // gpubudget.io/reset is the only thing that ever lifts it (see
@@ -1103,7 +1103,7 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -1157,7 +1157,7 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 
 // TestReconcile_ReapplyRaisingLimitThenResetFullyRestores covers the exact
 // workflow reported against a real cluster: enforce, then separately (a)
-// reapply the quota with spec.GPUHoursLimit raised above current usage and
+// reapply the budget with spec.GPUHoursLimit raised above current usage and
 // (b) annotate gpubudget.io/reset=true - two independent updates, as
 // `oc apply` followed by `oc annotate` would produce, landing before the
 // next reconcile picks either up. A single subsequent reconcile must fully
@@ -1169,7 +1169,7 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	gb := &gpubudgetv1alpha1.GpuBudget{
-		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
 			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
@@ -1190,7 +1190,7 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
 	}
 
-	// `oc apply -f quota.yaml` with a raised limit (usage is 50h; new limit
+	// `oc apply -f budget.yaml` with a raised limit (usage is 50h; new limit
 	// is well above it) ...
 	enforced.Spec.GPUHoursLimit = float64Ptr(1000)
 	if err := c.Update(context.Background(), &enforced); err != nil {
@@ -1259,7 +1259,7 @@ func TestReconcile_ResetSurvivesConflictClearingTheAnnotation(t *testing.T) {
 	dep.Annotations = map[string]string{"gpubudget.io/original-replicas": "3"}
 	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "quota", Namespace: "gavin-test",
+			Name: "budget", Namespace: "gavin-test",
 			Annotations: map[string]string{gpubudgetv1alpha1.ResetAnnotation: "true"},
 		},
 		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
