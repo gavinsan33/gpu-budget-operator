@@ -408,8 +408,17 @@ doesn't use (see `manager/` below for why). Instead, the CSV's
 sync by hand with `manager/deploy/deployment.yaml` and
 `manager/bootstrap/role.yaml` whenever either changes. Only the CRD copy in
 `bundle/manifests` is generated - `make bundle-manifests` (a dependency of
-`make bundle-validate`/`make bundle-build`) just copies the `make
-manifests`-generated `config/crd/gpubudget.io_gpubudgets.yaml` over it.
+`make bundle-validate`/`make bundle-build`) just copies both `make
+manifests`-generated CRDs (`gpubudget.io_gpubudgets.yaml` and
+`gpubudget.io_gpubudgetoperatorconfigs.yaml`) over it.
+
+The CSV's Deployment spec deliberately carries no `--prometheus-url`/
+`--gpu-rate` args (main.go doesn't accept them - see the
+`GpuBudgetOperatorConfig` architecture section above) - `clusterPermissions`
+instead grants `get;list;watch` on `gpubudgetoperatorconfigs`, and
+`customresourcedefinitions.owned` lists both CRDs so the console renders a
+form for `GpuBudgetOperatorConfig` too (from its own `specDescriptors`),
+the same way it already does for `GpuBudget`.
 
 The permissions in `manager/bootstrap/role.yaml` are namespace-scoped
 resource kinds (Deployments, Jobs, Pods, etc.) but bound cluster-wide via a

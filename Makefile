@@ -184,8 +184,9 @@ undeploy: ## Undeploy the namespace-scoped resources. Leaves the CRD/Namespace/R
 BUNDLE_IMG ?= image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator-bundle:latest
 
 .PHONY: bundle-manifests
-bundle-manifests: manifests ## Sync the generated CRD into bundle/manifests (the CSV itself is hand-maintained - see above).
+bundle-manifests: manifests ## Sync the generated CRDs into bundle/manifests (the CSV itself is hand-maintained - see above).
 	cp config/crd/gpubudget.io_gpubudgets.yaml bundle/manifests/gpubudget.io_gpubudgets.yaml
+	cp config/crd/gpubudget.io_gpubudgetoperatorconfigs.yaml bundle/manifests/gpubudget.io_gpubudgetoperatorconfigs.yaml
 
 .PHONY: bundle-validate
 bundle-validate: bundle-manifests operator-sdk ## Validate the OLM bundle (CSV + CRD + annotations) with operator-sdk.

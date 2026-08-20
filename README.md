@@ -345,6 +345,13 @@ under **Operators → OperatorHub** in the console (search "GPU Budget"), and
 `oc get csv -n gpu-budget-operator-system` should show
 `gpu-budget-operator.v0.1.0` reach `Succeeded`.
 
+Once installed, create a `GpuBudgetOperatorConfig` named `cluster` — the
+console's **Installed Operators → GPU Budget Operator → Provided APIs**
+tab renders a real form for it (from the CSV's `specDescriptors`), or apply
+`samples/gpubudgetoperatorconfig.yaml` directly. Every `GpuBudget` reports
+`status.phase: Unknown` until this exists — see "The `GpuBudgetOperatorConfig`
+CRD" above.
+
 If `BUNDLE_IMG`/`CATALOG_IMG` (both default to the in-cluster OpenShift
 registry, matching `manager/deploy/deployment.yaml`'s image) need to point
 somewhere else — an external registry, a different namespace — override them

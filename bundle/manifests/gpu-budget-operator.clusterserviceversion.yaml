@@ -8,6 +8,21 @@ metadata:
       [
         {
           "apiVersion": "gpubudget.io/v1alpha1",
+          "kind": "GpuBudgetOperatorConfig",
+          "metadata": {
+            "name": "cluster"
+          },
+          "spec": {
+            "prometheusURL": "https://thanos-querier.openshift-monitoring.svc:9091",
+            "gpuRates": [
+              {"family": "A100", "dollarsPerGPUHour": 1.70},
+              {"family": "H100", "dollarsPerGPUHour": 1.10},
+              {"family": "V100", "dollarsPerGPUHour": 0.30}
+            ]
+          }
+        },
+        {
+          "apiVersion": "gpubudget.io/v1alpha1",
           "kind": "GpuBudget",
           "metadata": {
             "name": "gavin-test-budget"
@@ -39,6 +54,11 @@ spec:
     `gpubudget.io/reset` annotation on the `GpuBudget` restores enforced
     workloads. See the project README for the full spec/status field
     reference and enforcement-mechanism-per-workload-kind table.
+
+    **After installing**, create a `GpuBudgetOperatorConfig` named `cluster`
+    (see the "Provided APIs" tab) with your Prometheus URL and GPU rates -
+    every `GpuBudget` reports `status.phase: Unknown` until it exists, and
+    editing it later takes effect immediately with no restart.
 
     **Before installing via OLM**, two cluster-admin prerequisites are NOT
     covered by this bundle (matching this project's existing bootstrap/deploy
@@ -137,6 +157,20 @@ spec:
         description: Cumulative cost in USD consumed so far in the current period.
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:number
+    - name: gpubudgetoperatorconfigs.gpubudget.io
+      version: v1alpha1
+      kind: GpuBudgetOperatorConfig
+      displayName: GPU Budget Operator Config
+      description: Cluster-scoped singleton (must be named "cluster") holding the Prometheus endpoint and per-GPU-family $/GPU-hour rates every GpuBudget in the cluster shares. Create exactly one before creating any GpuBudget.
+      specDescriptors:
+      - path: prometheusURL
+        displayName: Prometheus URL
+        description: The single, cluster-wide Prometheus/Thanos base URL every GpuBudget is evaluated against.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - path: gpuRates
+        displayName: GPU Rates
+        description: USD cost per GPU-hour, one entry per GPU family (e.g. A100). Matched against a GpuBudget's observed gpuType by family prefix.
   install:
     strategy: deployment
     spec:
@@ -169,6 +203,14 @@ spec:
           - gpubudgets/finalizers
           verbs:
           - update
+        - apiGroups:
+          - gpubudget.io
+          resources:
+          - gpubudgetoperatorconfigs
+          verbs:
+          - get
+          - list
+          - watch
         - apiGroups:
           - apps
           resources:
@@ -263,10 +305,6 @@ spec:
                 - /manager
                 args:
                 - --leader-elect
-                - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
-                - --gpu-rate=A100=1.70
-                - --gpu-rate=H100=1.10
-                - --gpu-rate=V100=0.30
                 volumeMounts:
                 - name: service-ca
                   mountPath: /etc/gpu-budget-operator/service-ca
