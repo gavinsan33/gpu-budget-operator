@@ -1,0 +1,18 @@
+# Registers the catalog image (built by `make catalog-build` from
+# catalog.Dockerfile) as a source OperatorHub/the OLM console reads from.
+# Lives in openshift-marketplace, matching every other CatalogSource on the
+# cluster (Red Hat's own included) - OLM's catalog operator only watches
+# CatalogSources there (or wherever a Subscription's sourceNamespace points).
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: gpu-budget-operator-catalog
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  image: image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator-catalog:latest
+  displayName: GPU Budget Operator Catalog
+  publisher: gpu-budget-operator maintainers
+  updateStrategy:
+    registryPoll:
+      interval: 10m

@@ -1,0 +1,20 @@
+# olm.template.basic input for `opm alpha render-template basic` (see the
+# Makefile's `catalog-render` target). Hand-maintained: unlike bundle/, there
+# is no `opm render`-from-directory equivalent that also fills in a real
+# `image:` reference, since a File-Based Catalog's bundle entries must point
+# at an already-pushed, pullable bundle image (opm resolves and inlines that
+# image's manifests at render time) - so BUNDLE_IMG below is a real registry
+# reference the bundle image must exist at, substituted from the Makefile's
+# $(BUNDLE_IMG) before rendering.
+schema: olm.template.basic
+entries:
+- schema: olm.package
+  name: gpu-budget-operator
+  defaultChannel: alpha
+- schema: olm.channel
+  package: gpu-budget-operator
+  name: alpha
+  entries:
+  - name: gpu-budget-operator.v0.1.0
+- schema: olm.bundle
+  image: BUNDLE_IMG_PLACEHOLDER

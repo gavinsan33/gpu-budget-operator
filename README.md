@@ -322,11 +322,34 @@ oc apply -f manager/deploy/service-ca-configmap.yaml
 oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
 make bundle-validate   # validate bundle/ with operator-sdk before building
 make bundle-build      # build the bundle image from bundle.Dockerfile
+make bundle-push       # push it - required before the catalog can reference it
 ```
 
-Push the resulting bundle image, add it to a `CatalogSource` your cluster
-can see, then create a `Subscription` to it. See `Makefile`'s `##@ OLM
-Bundle` section and `CLAUDE.md` for why the CSV is hand-maintained rather
-than generated, and for what the CSV's `image:` field currently assumes
-(the in-cluster OpenShift registry, same as `manager/deploy/deployment.yaml`
-— swap it before pushing the bundle elsewhere).
+A bundle image alone isn't something OperatorHub/the OLM console can browse
+— it needs to be listed in a **catalog** (a small File-Based Catalog image,
+`catalog/`, `catalog.Dockerfile`) registered as a cluster `CatalogSource`.
+This is what actually makes the operator show up as a tile in OperatorHub:
+
+```
+make catalog-render    # resolve BUNDLE_IMG (must be pushed already) into catalog/gpu-budget-operator/catalog.yaml
+make catalog-validate  # validate the rendered catalog with opm - no registry access needed
+make catalog-build     # build the catalog image from catalog.Dockerfile
+make catalog-push      # push it
+make catalog-deploy    # apply the CatalogSource + OperatorGroup + Subscription in manager/olm/
+```
+
+`make catalog-deploy` creates the `Subscription` that actually triggers
+installation — once the `CatalogSource` shows `READY` (`oc get catalogsource
+-n openshift-marketplace gpu-budget-operator-catalog`), the operator appears
+under **Operators → OperatorHub** in the console (search "GPU Budget"), and
+`oc get csv -n gpu-budget-operator-system` should show
+`gpu-budget-operator.v0.1.0` reach `Succeeded`.
+
+If `BUNDLE_IMG`/`CATALOG_IMG` (both default to the in-cluster OpenShift
+registry, matching `manager/deploy/deployment.yaml`'s image) need to point
+somewhere else — an external registry, a different namespace — override them
+on the `make` command line, e.g. `make bundle-build BUNDLE_IMG=quay.io/you/gpu-budget-operator-bundle:v0.1.0`.
+See `Makefile`'s `##@ OLM Bundle`/`##@ OLM Catalog` sections and `CLAUDE.md`
+for why the CSV is hand-maintained rather than generated, and why
+`catalog.yaml` is generated-but-gitignored rather than committed like
+`bundle/manifests`'s CRD copy.

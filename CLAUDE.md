@@ -439,6 +439,43 @@ rebuilt, since OLM (not `make deploy`) owns this Deployment once installed
 via a Subscription; bumping the image requires a new CSV version (a
 `replaces`/`skipRange` upgrade), not just a new build.
 
+### OLM catalog (`catalog/`, `catalog.Dockerfile`, `manager/olm/`)
+
+A bundle image (above) is one operator's install manifests, but OLM's
+console/OperatorHub doesn't browse bundle images directly - it reads a
+**catalog**: a small File-Based Catalog (FBC), the modern replacement for
+the deprecated sqlite-index format, describing which package/channel/bundle
+combinations exist. `catalog/gpu-budget-operator/basic-template.yaml` is the
+hand-maintained input (an `olm.template.basic` document: one `olm.package`,
+one `olm.channel` with a single `gpu-budget-operator.v0.1.0` entry, one
+`olm.bundle` pointing at `BUNDLE_IMG_PLACEHOLDER`); `make catalog-render`
+substitutes the real `BUNDLE_IMG` and runs `opm alpha render-template basic`
+to produce `catalog/gpu-budget-operator/catalog.yaml` - **not** committed
+(gitignored), unlike `bundle/manifests`'s CRD copy, because rendering
+requires `opm` to actually resolve and inline `BUNDLE_IMG`'s manifests, so a
+committed copy would either need a real registry push at commit time or go
+stale/wrong (a blank `image:` field) the moment anyone re-ran it locally
+without one - there's no version of this file that's simultaneously
+accurate and independent of a live registry, the way `config/crd`'s output
+is.
+
+`catalog.Dockerfile` was generated once via `opm generate dockerfile
+catalog --base-image quay.io/operator-framework/opm:v1.73.0` (pin matching
+the Makefile's `OPM_VERSION`) and checked in as-is - it's boilerplate
+`opm serve` wiring, not something this project's own logic touches, so
+there's nothing to hand-maintain the way the CSV is.
+
+`manager/olm/` holds the three objects that make a rendered-and-pushed
+catalog actually installable: `catalogsource.yaml` (registers the catalog
+image in `openshift-marketplace`, the namespace every other `CatalogSource`
+on an OpenShift cluster - including Red Hat's own - lives in),
+`operatorgroup.yaml` (no `spec.targetNamespaces`, matching the CSV's
+`AllNamespaces` install mode), and `subscription.yaml` (what actually
+triggers OLM to create the InstallPlan). These are deliberately **not**
+folded into `manager/bootstrap/` or `manager/deploy/` - they're a third,
+mutually-exclusive install path (`make catalog-deploy`), not something a
+`make bootstrap`/`make deploy` install also needs.
+
 ## Development Commands
 
 - `make manifests` / `make generate` — regenerate `config/crd/*.yaml` and

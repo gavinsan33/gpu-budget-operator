@@ -195,6 +195,60 @@ bundle-validate: bundle-manifests operator-sdk ## Validate the OLM bundle (CSV +
 bundle-build: bundle-manifests ## Build the bundle image from bundle.Dockerfile.
 	podman build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
+.PHONY: bundle-push
+bundle-push: ## Push the bundle image built by bundle-build. Required before catalog-render can resolve it.
+	podman push $(BUNDLE_IMG)
+
+##@ OLM Catalog
+#
+# A File-Based Catalog (FBC), the modern replacement for the deprecated
+# sqlite-index format - a small directory of declarative YAML/JSON that
+# describes which bundle image(s) exist per package/channel, without
+# embedding the bundle content itself (unlike bundle/, which DOES embed
+# the CSV/CRD directly - see bundle-manifests above). This is what a
+# CatalogSource actually points at, and what makes the operator appear as
+# an OperatorHub tile - a bundle image alone isn't browsable by OLM's
+# console on its own.
+#
+# catalog-render is the one target here that needs real registry access:
+# `opm alpha render-template basic` resolves and inlines BUNDLE_IMG's
+# manifests into catalog.yaml, so BUNDLE_IMG must already be pushed
+# (bundle-push) and pullable from wherever you run this before rendering.
+# catalog-validate, by contrast, only checks the already-rendered
+# catalog.yaml's internal structure and needs no registry access.
+
+CATALOG_IMG ?= image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator-catalog:latest
+CATALOG_DIR ?= catalog/gpu-budget-operator
+
+.PHONY: catalog-render
+catalog-render: opm ## Render catalog.yaml from basic-template.yaml - requires BUNDLE_IMG to already be pushed (see bundle-push).
+	sed 's|BUNDLE_IMG_PLACEHOLDER|$(BUNDLE_IMG)|' $(CATALOG_DIR)/basic-template.yaml > /tmp/gpu-budget-operator-basic-template.yaml
+	$(OPM) alpha render-template basic -o yaml /tmp/gpu-budget-operator-basic-template.yaml > $(CATALOG_DIR)/catalog.yaml
+	rm -f /tmp/gpu-budget-operator-basic-template.yaml
+
+.PHONY: catalog-validate
+catalog-validate: opm ## Validate the already-rendered File-Based Catalog under catalog/ - no registry access needed.
+	$(OPM) validate catalog/gpu-budget-operator
+
+.PHONY: catalog-build
+catalog-build: ## Build the catalog image from catalog.Dockerfile (requires catalog-render to have produced catalog.yaml first).
+	podman build -f catalog.Dockerfile -t $(CATALOG_IMG) .
+
+.PHONY: catalog-push
+catalog-push: ## Push the catalog image built by catalog-build.
+	podman push $(CATALOG_IMG)
+
+.PHONY: catalog-deploy
+catalog-deploy: ## Apply the CatalogSource/OperatorGroup/Subscription. Requires make bootstrap's namespace, manager/deploy/service-ca-configmap.yaml, and manager/bootstrap/monitoring_rolebinding.yaml to already be applied, and CATALOG_IMG to already be pushed.
+	oc apply -f manager/bootstrap/namespace.yaml
+	oc apply -f manager/deploy/service-ca-configmap.yaml
+	oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
+	oc apply -k manager/olm/
+
+.PHONY: catalog-undeploy
+catalog-undeploy: ## Remove the CatalogSource/OperatorGroup/Subscription (and, via OLM, the CSV it installed). Leaves the namespace/service-ca/monitoring-binding in place.
+	oc delete -k manager/olm/
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to
@@ -205,10 +259,12 @@ $(LOCALBIN):
 ## Tool Binaries
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
+OPM ?= $(LOCALBIN)/opm
 
 ## Tool Versions
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 OPERATOR_SDK_VERSION ?= v1.42.3
+OPM_VERSION ?= v1.73.0
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -226,3 +282,9 @@ $(OPERATOR_SDK): $(LOCALBIN)
 	# instead of `go install`.
 	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(shell go env GOOS)_$(shell go env GOARCH)
 	chmod +x $(OPERATOR_SDK)
+
+.PHONY: opm
+opm: $(OPM) ## Download opm locally if necessary (only used for `make catalog-render`/`make catalog-validate`).
+$(OPM): $(LOCALBIN)
+	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$(shell go env GOOS)-$(shell go env GOARCH)-opm
+	chmod +x $(OPM)
