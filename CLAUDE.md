@@ -397,6 +397,48 @@ to enforce" rather than failing the whole reconcile. None of the other five
 kinds need this fallback, since `apps/v1`/`batch/v1`/core `v1` are always
 present on any Kubernetes cluster.
 
+### OLM bundle (`bundle/`, `bundle.Dockerfile`)
+
+`bundle/manifests/gpu-budget-operator.clusterserviceversion.yaml` is
+**hand-maintained, not generated** - operator-sdk's usual `generate
+kustomize manifests`/`generate bundle` commands expect a kubebuilder-style
+`config/{crd,rbac,manager,manifests}` split, which this repo deliberately
+doesn't use (see `manager/` below for why). Instead, the CSV's
+`install.spec.deployments` and `install.spec.clusterPermissions` are kept in
+sync by hand with `manager/deploy/deployment.yaml` and
+`manager/bootstrap/role.yaml` whenever either changes. Only the CRD copy in
+`bundle/manifests` is generated - `make bundle-manifests` (a dependency of
+`make bundle-validate`/`make bundle-build`) just copies the `make
+manifests`-generated `config/crd/gpubudget.io_gpubudgets.yaml` over it.
+
+The permissions in `manager/bootstrap/role.yaml` are namespace-scoped
+resource kinds (Deployments, Jobs, Pods, etc.) but bound cluster-wide via a
+`ClusterRoleBinding`, since a single operator instance reconciles `GpuBudget`
+objects across every namespace (`main.go`'s manager has no `Namespace`
+restriction) - this maps directly onto the CSV's `clusterPermissions` (not
+`permissions`, which OLM scopes to one namespace) and `installModes:
+AllNamespaces: true`.
+
+Two cluster-admin prerequisites from `manager/bootstrap/` are **not**
+representable in the CSV and stay manual, applied once before subscribing
+(see README's "Install via OLM"):
+- `manager/deploy/service-ca-configmap.yaml` - OLM's install strategy only
+  knows how to create Deployments/(Cluster)Roles/(Cluster)RoleBindings/
+  ServiceAccounts, not arbitrary ConfigMaps.
+- `manager/bootstrap/monitoring_rolebinding.yaml` - OLM's `clusterPermissions`
+  only lets a CSV grant rules it defines itself as a new ClusterRole; it has
+  no way to bind the operator's ServiceAccount to a pre-existing external
+  ClusterRole like OpenShift's built-in `cluster-monitoring-view` by name.
+
+The CSV's container image is a fixed reference to the in-cluster OpenShift
+registry image built by `manager/deploy/build.yaml`'s BuildConfig
+(`image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator:latest`),
+matching `manager/deploy/deployment.yaml` exactly - unlike that Deployment,
+though, nothing re-triggers a rollout when the underlying ImageStreamTag is
+rebuilt, since OLM (not `make deploy`) owns this Deployment once installed
+via a Subscription; bumping the image requires a new CSV version (a
+`replaces`/`skipRange` upgrade), not just a new build.
+
 ## Development Commands
 
 - `make manifests` / `make generate` — regenerate `config/crd/*.yaml` and

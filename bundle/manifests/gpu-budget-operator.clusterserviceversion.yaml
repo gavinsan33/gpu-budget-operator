@@ -1,0 +1,290 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: gpu-budget-operator.v0.1.0
+  namespace: placeholder
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "gpubudget.io/v1alpha1",
+          "kind": "GpuBudget",
+          "metadata": {
+            "name": "gavin-test-budget"
+          },
+          "spec": {
+            "period": "Monthly",
+            "gpuHoursLimit": 500,
+            "checkInterval": "15m"
+          }
+        }
+      ]
+    # Basic Install: no auto-generated metrics/HA/upgrade automation beyond
+    # what OLM itself provides.
+    capabilities: Basic Install
+    containerImage: image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator:latest
+    repository: https://github.com/gavinsan33/gpu-budget-operator
+    support: gpu-budget-operator
+spec:
+  displayName: GPU Budget Operator
+  description: |-
+    Lets a namespace opt in to a cumulative, self-imposed GPU budget (GPU-hours
+    and/or dollars) over a recurring calendar billing period (Daily/Weekly/
+    Monthly), by creating a `GpuBudget` custom resource. The operator tracks
+    cumulative usage via Prometheus and, once either budget is exceeded, scales
+    GPU-consuming workloads (Deployment, StatefulSet, standalone ReplicaSet,
+    JobSet, standalone Job, InferenceService, standalone Pod) down to zero.
+
+    Enforcement is never lifted automatically - only a human clearing the
+    `gpubudget.io/reset` annotation on the `GpuBudget` restores enforced
+    workloads. See the project README for the full spec/status field
+    reference and enforcement-mechanism-per-workload-kind table.
+
+    **Before installing via OLM**, two cluster-admin prerequisites are NOT
+    covered by this bundle (matching this project's existing bootstrap/deploy
+    split - see `manager/bootstrap/` in the repo):
+    1. The target namespace's `gpu-budget-operator-service-ca` ConfigMap
+       (annotated for OpenShift's service-ca operator to inject the cluster's
+       service-serving CA bundle into) - the operator mounts this and always
+       trusts it if present, falling back to the system trust store only if
+       it's absent.
+    2. A `ClusterRoleBinding` granting this operator's ServiceAccount
+       OpenShift's built-in `cluster-monitoring-view` ClusterRole, so it can
+       actually read from the cluster's Thanos Querier. OLM's
+       `clusterPermissions` can only grant rules this CSV defines itself, not
+       bind to a pre-existing external ClusterRole by name - so this stays a
+       one-time `oc apply -f manager/bootstrap/monitoring_rolebinding.yaml`
+       (or equivalent) alongside the Subscription.
+  version: 0.1.0
+  maturity: alpha
+  provider:
+    name: gpu-budget-operator maintainers
+  maintainers:
+  - name: gpu-budget-operator maintainers
+    email: noreply@example.com
+  minKubeVersion: 1.25.0
+  installModes:
+  - type: OwnNamespace
+    supported: false
+  - type: SingleNamespace
+    supported: false
+  - type: MultiNamespace
+    supported: false
+  - type: AllNamespaces
+    supported: true
+  keywords:
+  - gpu
+  - budget
+  - cost
+  - quota
+  - openshift
+  - prometheus
+  links:
+  - name: Source Repository
+    url: https://github.com/gavinsan33/gpu-budget-operator
+  customresourcedefinitions:
+    owned:
+    - name: gpubudgets.gpubudget.io
+      version: v1alpha1
+      kind: GpuBudget
+      displayName: GPU Budget
+      description: A namespace's cumulative GPU-hours/dollar budget over a recurring calendar billing period, and the operator's tracked usage/enforcement status against it.
+      resources:
+      - kind: Deployment
+        version: v1
+      - kind: StatefulSet
+        version: v1
+      - kind: ReplicaSet
+        version: v1
+      - kind: Job
+        version: v1
+      - kind: Pod
+        version: v1
+      specDescriptors:
+      - path: period
+        displayName: Period
+        description: Calendar-aligned billing cycle the budget resets on (Daily/Weekly/Monthly) - never a rolling window.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:label
+      - path: gpuHoursLimit
+        displayName: GPU-Hours Limit
+        description: Max cumulative GPU-hours, summed across all GPU types, allowed within the current period.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:number
+      - path: dollarsLimit
+        displayName: Dollars Limit
+        description: Max cumulative cost in USD allowed within the current period.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:number
+      - path: checkInterval
+        displayName: Check Interval
+        description: How often cumulative usage is re-evaluated. Defaults to 15m.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      statusDescriptors:
+      - path: phase
+        displayName: Phase
+        description: One of Compliant, Enforced, or Unknown.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:phase
+      - path: gpuHoursUsed
+        displayName: GPU-Hours Used
+        description: Cumulative GPU-hours consumed so far in the current period.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:number
+      - path: dollarsUsed
+        displayName: Dollars Used
+        description: Cumulative cost in USD consumed so far in the current period.
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:number
+  install:
+    strategy: deployment
+    spec:
+      clusterPermissions:
+      - serviceAccountName: gpu-budget-operator-controller-manager
+        rules:
+        - apiGroups:
+          - gpubudget.io
+          resources:
+          - gpubudgets
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - gpubudget.io
+          resources:
+          - gpubudgets/status
+          verbs:
+          - get
+          - update
+          - patch
+        - apiGroups:
+          - gpubudget.io
+          resources:
+          - gpubudgets/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - apps
+          resources:
+          - deployments
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - apps
+          resources:
+          - replicasets
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - apps
+          resources:
+          - statefulsets
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - jobset.x-k8s.io
+          resources:
+          - jobsets
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - batch
+          resources:
+          - jobs
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - serving.kserve.io
+          resources:
+          - inferenceservices
+          verbs:
+          - get
+          - list
+          - watch
+          - update
+          - patch
+        - apiGroups:
+          - ""
+          resources:
+          - pods
+          verbs:
+          - get
+          - list
+          - watch
+          - delete
+      deployments:
+      - name: gpu-budget-operator-controller-manager
+        label:
+          control-plane: controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              control-plane: controller-manager
+          template:
+            metadata:
+              labels:
+                control-plane: controller-manager
+            spec:
+              serviceAccountName: gpu-budget-operator-controller-manager
+              securityContext:
+                runAsNonRoot: true
+              containers:
+              - name: manager
+                image: image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator:latest
+                imagePullPolicy: Always
+                command:
+                - /manager
+                args:
+                - --leader-elect
+                - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
+                - --gpu-rate=A100=1.70
+                - --gpu-rate=H100=1.10
+                - --gpu-rate=V100=0.30
+                volumeMounts:
+                - name: service-ca
+                  mountPath: /etc/gpu-budget-operator/service-ca
+                  readOnly: true
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  runAsNonRoot: true
+              volumes:
+              - name: service-ca
+                configMap:
+                  name: gpu-budget-operator-service-ca

@@ -163,6 +163,38 @@ deploy: ## Routine redeploy: apply namespace-scoped resources, build the image i
 undeploy: ## Undeploy the namespace-scoped resources. Leaves the CRD/Namespace/RBAC from `make bootstrap` in place - use `make unbootstrap` for those.
 	oc delete -k manager/deploy/
 
+##@ OLM Bundle
+#
+# bundle/manifests/gpu-budget-operator.clusterserviceversion.yaml is
+# hand-maintained, not kustomize/operator-sdk-generated - this repo's
+# manager/{bootstrap,deploy} split doesn't match the config/{crd,rbac,manager}
+# layout operator-sdk's own `generate kustomize manifests`/`generate bundle`
+# commands expect, so the CSV's Deployment/RBAC are kept in sync with
+# manager/deploy/deployment.yaml and manager/bootstrap/role.yaml by hand
+# instead. The CRD copy in bundle/manifests IS generated - `bundle-manifests`
+# just syncs it from config/crd after `make manifests` runs.
+#
+# The CSV intentionally omits two cluster-admin prerequisites that OLM's
+# install strategy has no mechanism for: the service-ca ConfigMap
+# (manager/deploy/service-ca-configmap.yaml) and the ClusterRoleBinding to
+# OpenShift's pre-existing cluster-monitoring-view ClusterRole
+# (manager/bootstrap/monitoring_rolebinding.yaml) - see the CSV's own
+# description field for why. Apply both once before subscribing.
+
+BUNDLE_IMG ?= image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator-bundle:latest
+
+.PHONY: bundle-manifests
+bundle-manifests: manifests ## Sync the generated CRD into bundle/manifests (the CSV itself is hand-maintained - see above).
+	cp config/crd/gpubudget.io_gpubudgets.yaml bundle/manifests/gpubudget.io_gpubudgets.yaml
+
+.PHONY: bundle-validate
+bundle-validate: bundle-manifests operator-sdk ## Validate the OLM bundle (CSV + CRD + annotations) with operator-sdk.
+	$(OPERATOR_SDK) bundle validate ./bundle
+
+.PHONY: bundle-build
+bundle-build: bundle-manifests ## Build the bundle image from bundle.Dockerfile.
+	podman build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to
@@ -172,11 +204,25 @@ $(LOCALBIN):
 
 ## Tool Binaries
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
 
 ## Tool Versions
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
+OPERATOR_SDK_VERSION ?= v1.42.3
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+.PHONY: operator-sdk
+operator-sdk: $(OPERATOR_SDK) ## Download operator-sdk locally if necessary (only used for `make bundle-validate`).
+$(OPERATOR_SDK): $(LOCALBIN)
+	# `go install` on operator-sdk drags in a cgo dependency on libgpgme
+	# (via containers/image, transitively pulled in for image-signature
+	# verification code this project never calls) that isn't installed on
+	# most dev machines by default - operator-sdk's own docs install the
+	# prebuilt release binary for exactly this reason, so this does the same
+	# instead of `go install`.
+	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(shell go env GOOS)_$(shell go env GOARCH)
+	chmod +x $(OPERATOR_SDK)

@@ -296,3 +296,37 @@ an unauthenticated request both happen automatically.
 make undeploy      # namespace-scoped resources only
 make unbootstrap   # CRD, Namespace, and cluster-scoped RBAC (cluster-admin)
 ```
+
+## Install via OLM (alternative)
+
+Instead of `make bootstrap`/`make deploy`, the operator can be installed
+through the Operator Lifecycle Manager as a `Subscription` against a
+`CatalogSource` containing this operator's bundle (`bundle/`,
+`bundle.Dockerfile`). This mirrors `manager/deploy/deployment.yaml`'s
+Deployment and `manager/bootstrap/role.yaml`'s ClusterRole/ClusterRoleBinding
+inside a `ClusterServiceVersion` — OLM applies both for you as part of the
+Subscription, same as `make deploy`/`make bootstrap` do manually.
+
+Two things `make bootstrap` normally covers are **not** part of the OLM
+bundle, since OLM's install strategy has no mechanism for either, and must
+still be applied once, out of band, before subscribing:
+- `manager/deploy/service-ca-configmap.yaml` — the ConfigMap OpenShift's
+  service-ca operator injects the cluster's serving CA bundle into.
+- `manager/bootstrap/monitoring_rolebinding.yaml` — the ClusterRoleBinding
+  to OpenShift's pre-existing `cluster-monitoring-view` ClusterRole (OLM's
+  `clusterPermissions` can only grant rules the CSV defines itself, not bind
+  to an existing external ClusterRole by name).
+
+```
+oc apply -f manager/deploy/service-ca-configmap.yaml
+oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
+make bundle-validate   # validate bundle/ with operator-sdk before building
+make bundle-build      # build the bundle image from bundle.Dockerfile
+```
+
+Push the resulting bundle image, add it to a `CatalogSource` your cluster
+can see, then create a `Subscription` to it. See `Makefile`'s `##@ OLM
+Bundle` section and `CLAUDE.md` for why the CSV is hand-maintained rather
+than generated, and for what the CSV's `image:` field currently assumes
+(the in-cluster OpenShift registry, same as `manager/deploy/deployment.yaml`
+— swap it before pushing the bundle elsewhere).
