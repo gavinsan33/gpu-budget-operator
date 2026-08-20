@@ -296,3 +296,67 @@ an unauthenticated request both happen automatically.
 make undeploy      # namespace-scoped resources only
 make unbootstrap   # CRD, Namespace, and cluster-scoped RBAC (cluster-admin)
 ```
+
+## Install via OLM (alternative)
+
+Instead of `make bootstrap`/`make deploy`, the operator can be installed
+through the Operator Lifecycle Manager as a `Subscription` against a
+`CatalogSource` containing this operator's bundle (`bundle/`,
+`bundle.Dockerfile`). This mirrors `manager/deploy/deployment.yaml`'s
+Deployment and `manager/bootstrap/role.yaml`'s ClusterRole/ClusterRoleBinding
+inside a `ClusterServiceVersion` — OLM applies both for you as part of the
+Subscription, same as `make deploy`/`make bootstrap` do manually.
+
+Two things `make bootstrap` normally covers are **not** part of the OLM
+bundle, since OLM's install strategy has no mechanism for either, and must
+still be applied once, out of band, before subscribing:
+- `manager/deploy/service-ca-configmap.yaml` — the ConfigMap OpenShift's
+  service-ca operator injects the cluster's serving CA bundle into.
+- `manager/bootstrap/monitoring_rolebinding.yaml` — the ClusterRoleBinding
+  to OpenShift's pre-existing `cluster-monitoring-view` ClusterRole (OLM's
+  `clusterPermissions` can only grant rules the CSV defines itself, not bind
+  to an existing external ClusterRole by name).
+
+```
+oc apply -f manager/deploy/service-ca-configmap.yaml
+oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
+make bundle-validate   # validate bundle/ with operator-sdk before building
+make bundle-build      # build the bundle image from bundle.Dockerfile
+make bundle-push       # push it - required before the catalog can reference it
+```
+
+A bundle image alone isn't something OperatorHub/the OLM console can browse
+— it needs to be listed in a **catalog** (a small File-Based Catalog image,
+`catalog/`, `catalog.Dockerfile`) registered as a cluster `CatalogSource`.
+This is what actually makes the operator show up as a tile in OperatorHub:
+
+```
+make catalog-render    # resolve BUNDLE_IMG (must be pushed already) into catalog/gpu-budget-operator/catalog.yaml
+make catalog-validate  # validate the rendered catalog with opm - no registry access needed
+make catalog-build     # build the catalog image from catalog.Dockerfile
+make catalog-push      # push it
+make catalog-deploy    # apply the CatalogSource + OperatorGroup + Subscription in manager/olm/
+```
+
+`make catalog-deploy` creates the `Subscription` that actually triggers
+installation — once the `CatalogSource` shows `READY` (`oc get catalogsource
+-n openshift-marketplace gpu-budget-operator-catalog`), the operator appears
+under **Operators → OperatorHub** in the console (search "GPU Budget"), and
+`oc get csv -n gpu-budget-operator-system` should show
+`gpu-budget-operator.v0.1.0` reach `Succeeded`.
+
+Once installed, create a `GpuBudgetOperatorConfig` named `cluster` — the
+console's **Installed Operators → GPU Budget Operator → Provided APIs**
+tab renders a real form for it (from the CSV's `specDescriptors`), or apply
+`samples/gpubudgetoperatorconfig.yaml` directly. Every `GpuBudget` reports
+`status.phase: Unknown` until this exists — see "The `GpuBudgetOperatorConfig`
+CRD" above.
+
+If `BUNDLE_IMG`/`CATALOG_IMG` (both default to the in-cluster OpenShift
+registry, matching `manager/deploy/deployment.yaml`'s image) need to point
+somewhere else — an external registry, a different namespace — override them
+on the `make` command line, e.g. `make bundle-build BUNDLE_IMG=quay.io/you/gpu-budget-operator-bundle:v0.1.0`.
+See `Makefile`'s `##@ OLM Bundle`/`##@ OLM Catalog` sections and `CLAUDE.md`
+for why the CSV is hand-maintained rather than generated, and why
+`catalog.yaml` is generated-but-gitignored rather than committed like
+`bundle/manifests`'s CRD copy.

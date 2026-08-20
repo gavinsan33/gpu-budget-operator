@@ -1,0 +1,12 @@
+# No spec.targetNamespaces - an empty/absent list is how OLM recognizes an
+# AllNamespaces-mode OperatorGroup, matching the CSV's installModes (this
+# operator watches GpuBudget objects across every namespace, not just the
+# one it runs in - see CLAUDE.md's "no cross-namespace state, but a single
+# controller instance"). Only one OperatorGroup is allowed per namespace, so
+# if gpu-budget-operator-system already has one (unlikely for a
+# freshly-bootstrapped namespace), reuse it instead of applying this.
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: gpu-budget-operator-group
+  namespace: gpu-budget-operator-system

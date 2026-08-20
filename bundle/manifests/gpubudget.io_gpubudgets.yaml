@@ -1,0 +1,264 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: gpubudgets.gpubudget.io
+spec:
+  group: gpubudget.io
+  names:
+    kind: GpuBudget
+    listKind: GpuBudgetList
+    plural: gpubudgets
+    shortNames:
+    - gb
+    singular: gpubudget
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.period
+      name: Period
+      type: string
+    - jsonPath: .status.gpuHoursUsed
+      name: GPUHoursUsed
+      type: string
+    - jsonPath: .status.dollarsUsed
+      name: DollarsUsed
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              GpuBudgetSpec defines a cumulative GPU budget for the namespace the
+              GpuBudget lives in, over a recurring calendar period.
+            properties:
+              checkInterval:
+                default: 15m
+                description: |-
+                  CheckInterval is how often cumulative usage is re-evaluated. Defaults
+                  to 15m to match typical GPU-cluster billing granularity - checking
+                  more often than billing itself updates doesn't surface anything new.
+                type: string
+              dollarsLimit:
+                description: |-
+                  DollarsLimit is the max cumulative cost, in USD, allowed within the
+                  current period, computed from GPU-hours-by-type (see Query) and the
+                  operator's configured per-GPU-family hourly rates
+                  (GpuBudgetOperatorConfig's spec.gpuRates). At least one of
+                  GPUHoursLimit/DollarsLimit must be set; if both are set, whichever is
+                  exceeded first triggers enforcement.
+                type: number
+              gpuHoursLimit:
+                description: |-
+                  GPUHoursLimit is the max cumulative GPU-hours, summed across all GPU
+                  types, allowed within the current period. At least one of
+                  GPUHoursLimit/DollarsLimit must be set; if both are set, whichever is
+                  exceeded first triggers enforcement.
+                type: number
+              period:
+                description: |-
+                  Period is the calendar-aligned billing cycle the budget resets on.
+                  Daily starts at 00:00 UTC; Weekly starts Monday 00:00 UTC; Monthly
+                  starts on the 1st at 00:00 UTC.
+                enum:
+                - Daily
+                - Weekly
+                - Monthly
+                type: string
+              query:
+                description: |-
+                  Query overrides the default PromQL used to compute cumulative
+                  GPU-hours consumed since the current period started, broken out by
+                  GPU type. Must return one sample per GPU type, each labeled "gpuType"
+                  with a value matching one of the operator's configured rate keys
+                  (a100, h100, v100 - case-insensitive). The literal strings
+                  "__NAMESPACE__" and "__RANGE__" are substituted with the target
+                  namespace and a PromQL range duration covering "period start to now"
+                  respectively. Override this to change how GPU-hours are attributed -
+                  e.g. switching from reservation-based accounting (the default, which
+                  matches typical GPU-cluster billing: you're charged for what you
+                  reserved, not what you used) to DCGM utilization-based accounting -
+                  without any code or CRD changes.
+                type: string
+            required:
+            - period
+            type: object
+            x-kubernetes-validations:
+            - message: at least one of gpuHoursLimit or dollarsLimit must be set
+              rule: has(self.gpuHoursLimit) || has(self.dollarsLimit)
+          status:
+            description: |-
+              GpuBudgetStatus reports cumulative usage for the current period and any
+              enforcement taken.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              currentPeriodStart:
+                description: CurrentPeriodStart is when the current billing period
+                  began.
+                format: date-time
+                type: string
+              dollarsUsed:
+                description: DollarsUsed is cumulative cost, in USD, so far in the
+                  current period.
+                type: number
+              enforcedResources:
+                description: |-
+                  EnforcedResources lists workloads currently scaled down/suspended by
+                  this controller, awaiting a manual restore.
+                items:
+                  description: EnforcedResource records a single action taken against
+                    a workload.
+                  properties:
+                    action:
+                      description: 'Action taken: "ScaledToZero", "Suspended", or
+                        "Deleted".'
+                      type: string
+                    apiVersion:
+                      description: APIVersion of the affected resource.
+                      type: string
+                    enforcedAt:
+                      description: EnforcedAt is when the action was taken.
+                      format: date-time
+                      type: string
+                    kind:
+                      description: Kind of the affected resource.
+                      type: string
+                    name:
+                      description: Name of the affected resource.
+                      type: string
+                  required:
+                  - action
+                  - apiVersion
+                  - enforcedAt
+                  - kind
+                  - name
+                  type: object
+                type: array
+              gpuHoursByType:
+                description: GPUHoursByType breaks GPUHoursUsed down per GPU type.
+                items:
+                  description: |-
+                    GPUTypeUsage records cumulative GPU-hours consumed by one GPU type in the
+                    current period.
+                  properties:
+                    gpuHours:
+                      type: number
+                    gpuType:
+                      type: string
+                  required:
+                  - gpuHours
+                  - gpuType
+                  type: object
+                type: array
+              gpuHoursUsed:
+                description: |-
+                  GPUHoursUsed is cumulative GPU-hours consumed so far in the current
+                  period, summed across all GPU types.
+                type: number
+              lastCheckedTime:
+                description: LastCheckedTime is when usage was last queried from Prometheus.
+                format: date-time
+                type: string
+              lastEnforcementTime:
+                description: |-
+                  LastEnforcementTime is when enforcement most recently acted against
+                  this namespace.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation last reconciled.
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase is the current enforcement state. Enforcement is never lifted
+                  automatically - see ResetAnnotation.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

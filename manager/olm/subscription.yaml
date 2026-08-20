@@ -1,0 +1,17 @@
+# Triggers actual installation: OLM watches for a Subscription matching an
+# available package/channel in a registered CatalogSource and creates the
+# InstallPlan (CSV, CRD, Deployment, ClusterRole/ClusterRoleBinding) from
+# it. installPlanApproval: Automatic means future bundle versions in the
+# same channel install themselves on the next catalog poll - switch to
+# Manual if you want to review each InstallPlan before it applies.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gpu-budget-operator
+  namespace: gpu-budget-operator-system
+spec:
+  channel: alpha
+  name: gpu-budget-operator
+  source: gpu-budget-operator-catalog
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

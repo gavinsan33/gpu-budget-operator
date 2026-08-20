@@ -397,6 +397,94 @@ to enforce" rather than failing the whole reconcile. None of the other five
 kinds need this fallback, since `apps/v1`/`batch/v1`/core `v1` are always
 present on any Kubernetes cluster.
 
+### OLM bundle (`bundle/`, `bundle.Dockerfile`)
+
+`bundle/manifests/gpu-budget-operator.clusterserviceversion.yaml` is
+**hand-maintained, not generated** - operator-sdk's usual `generate
+kustomize manifests`/`generate bundle` commands expect a kubebuilder-style
+`config/{crd,rbac,manager,manifests}` split, which this repo deliberately
+doesn't use (see `manager/` below for why). Instead, the CSV's
+`install.spec.deployments` and `install.spec.clusterPermissions` are kept in
+sync by hand with `manager/deploy/deployment.yaml` and
+`manager/bootstrap/role.yaml` whenever either changes. Only the CRD copy in
+`bundle/manifests` is generated - `make bundle-manifests` (a dependency of
+`make bundle-validate`/`make bundle-build`) just copies both `make
+manifests`-generated CRDs (`gpubudget.io_gpubudgets.yaml` and
+`gpubudget.io_gpubudgetoperatorconfigs.yaml`) over it.
+
+The CSV's Deployment spec deliberately carries no `--prometheus-url`/
+`--gpu-rate` args (main.go doesn't accept them - see the
+`GpuBudgetOperatorConfig` architecture section above) - `clusterPermissions`
+instead grants `get;list;watch` on `gpubudgetoperatorconfigs`, and
+`customresourcedefinitions.owned` lists both CRDs so the console renders a
+form for `GpuBudgetOperatorConfig` too (from its own `specDescriptors`),
+the same way it already does for `GpuBudget`.
+
+The permissions in `manager/bootstrap/role.yaml` are namespace-scoped
+resource kinds (Deployments, Jobs, Pods, etc.) but bound cluster-wide via a
+`ClusterRoleBinding`, since a single operator instance reconciles `GpuBudget`
+objects across every namespace (`main.go`'s manager has no `Namespace`
+restriction) - this maps directly onto the CSV's `clusterPermissions` (not
+`permissions`, which OLM scopes to one namespace) and `installModes:
+AllNamespaces: true`.
+
+Two cluster-admin prerequisites from `manager/bootstrap/` are **not**
+representable in the CSV and stay manual, applied once before subscribing
+(see README's "Install via OLM"):
+- `manager/deploy/service-ca-configmap.yaml` - OLM's install strategy only
+  knows how to create Deployments/(Cluster)Roles/(Cluster)RoleBindings/
+  ServiceAccounts, not arbitrary ConfigMaps.
+- `manager/bootstrap/monitoring_rolebinding.yaml` - OLM's `clusterPermissions`
+  only lets a CSV grant rules it defines itself as a new ClusterRole; it has
+  no way to bind the operator's ServiceAccount to a pre-existing external
+  ClusterRole like OpenShift's built-in `cluster-monitoring-view` by name.
+
+The CSV's container image is a fixed reference to the in-cluster OpenShift
+registry image built by `manager/deploy/build.yaml`'s BuildConfig
+(`image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator:latest`),
+matching `manager/deploy/deployment.yaml` exactly - unlike that Deployment,
+though, nothing re-triggers a rollout when the underlying ImageStreamTag is
+rebuilt, since OLM (not `make deploy`) owns this Deployment once installed
+via a Subscription; bumping the image requires a new CSV version (a
+`replaces`/`skipRange` upgrade), not just a new build.
+
+### OLM catalog (`catalog/`, `catalog.Dockerfile`, `manager/olm/`)
+
+A bundle image (above) is one operator's install manifests, but OLM's
+console/OperatorHub doesn't browse bundle images directly - it reads a
+**catalog**: a small File-Based Catalog (FBC), the modern replacement for
+the deprecated sqlite-index format, describing which package/channel/bundle
+combinations exist. `catalog/gpu-budget-operator/basic-template.yaml` is the
+hand-maintained input (an `olm.template.basic` document: one `olm.package`,
+one `olm.channel` with a single `gpu-budget-operator.v0.1.0` entry, one
+`olm.bundle` pointing at `BUNDLE_IMG_PLACEHOLDER`); `make catalog-render`
+substitutes the real `BUNDLE_IMG` and runs `opm alpha render-template basic`
+to produce `catalog/gpu-budget-operator/catalog.yaml` - **not** committed
+(gitignored), unlike `bundle/manifests`'s CRD copy, because rendering
+requires `opm` to actually resolve and inline `BUNDLE_IMG`'s manifests, so a
+committed copy would either need a real registry push at commit time or go
+stale/wrong (a blank `image:` field) the moment anyone re-ran it locally
+without one - there's no version of this file that's simultaneously
+accurate and independent of a live registry, the way `config/crd`'s output
+is.
+
+`catalog.Dockerfile` was generated once via `opm generate dockerfile
+catalog --base-image quay.io/operator-framework/opm:v1.73.0` (pin matching
+the Makefile's `OPM_VERSION`) and checked in as-is - it's boilerplate
+`opm serve` wiring, not something this project's own logic touches, so
+there's nothing to hand-maintain the way the CSV is.
+
+`manager/olm/` holds the three objects that make a rendered-and-pushed
+catalog actually installable: `catalogsource.yaml` (registers the catalog
+image in `openshift-marketplace`, the namespace every other `CatalogSource`
+on an OpenShift cluster - including Red Hat's own - lives in),
+`operatorgroup.yaml` (no `spec.targetNamespaces`, matching the CSV's
+`AllNamespaces` install mode), and `subscription.yaml` (what actually
+triggers OLM to create the InstallPlan). These are deliberately **not**
+folded into `manager/bootstrap/` or `manager/deploy/` - they're a third,
+mutually-exclusive install path (`make catalog-deploy`), not something a
+`make bootstrap`/`make deploy` install also needs.
+
 ## Development Commands
 
 - `make manifests` / `make generate` — regenerate `config/crd/*.yaml` and
