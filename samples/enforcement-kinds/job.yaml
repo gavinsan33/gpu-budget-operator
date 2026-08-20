@@ -1,7 +1,7 @@
 # enforce.go: only standalone Jobs (no ownerReferences) are touched - a
 # JobSet's or CronJob's child Job is skipped, since suspending the JobSet
 # (or the not-yet-implemented CronJob case) already covers it. spec.suspend
-# set to true, reusing gpuquota.io/original-suspend. Reversible.
+# set to true, reusing gpubudget.io/original-suspend. Reversible.
 # pause never exits, so the Job stays Active indefinitely until suspended -
 # useful for observing the suspend take effect.
 apiVersion: batch/v1

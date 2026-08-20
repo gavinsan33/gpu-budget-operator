@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	gpuquotav1alpha1 "github.com/gsanders/gpu-quota-operator/v1alpha1"
+	gpubudgetv1alpha1 "github.com/gsanders/gpu-budget-operator/v1alpha1"
 )
 
 // promStub serves a fixed GPU-hours-by-type response from a fake Prometheus
@@ -61,7 +61,7 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	if err := batchv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	if err := gpuquotav1alpha1.AddToScheme(scheme); err != nil {
+	if err := gpubudgetv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return scheme
@@ -215,17 +215,17 @@ func TestReconcile_UnderBudgetDoesNotEnforce(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)})
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -233,11 +233,11 @@ func TestReconcile_UnderBudgetDoesNotEnforce(t *testing.T) {
 		t.Fatalf("expected positive requeue interval, got %v", res.RequeueAfter)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseCompliant {
 		t.Fatalf("expected Compliant phase, got %s", got.Status.Phase)
 	}
 	if got.Status.GPUHoursUsed != 2 {
@@ -262,25 +262,25 @@ func TestReconcile_OverGPUHoursLimitEnforcesImmediately(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase on the very first over-budget reconcile (no grace period), got %s", got.Status.Phase)
 	}
 	if len(got.Status.EnforcedResources) != 1 {
@@ -304,29 +304,29 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(100),
 			DollarsLimit:  float64Ptr(100),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.DollarsUsed != 300 {
 		t.Fatalf("expected DollarsUsed=300 (10h * $30), got %v", got.Status.DollarsUsed)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase since dollars exceeded budget despite GPU-hours being under, got %s", got.Status.Phase)
 	}
 }
@@ -344,25 +344,25 @@ func TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:       gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(100),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase == gpuquotav1alpha1.PhaseUnknown {
+	if got.Status.Phase == gpubudgetv1alpha1.PhaseUnknown {
 		t.Fatalf("expected the full-SKU gpuType to be priced via family-prefix matching, got Unknown phase: %+v", got.Status.Conditions)
 	}
 	if got.Status.DollarsUsed != 300 {
@@ -375,26 +375,26 @@ func TestReconcile_UnpricedGPUTypeWithDollarsLimitFailsLoudly(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:       gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
 	// GPURates zero-value: H100 has no configured rate.
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseUnknown {
 		t.Fatalf("expected Unknown phase for an unpriced GPU type, got %s", got.Status.Phase)
 	}
 	if got.Status.Conditions[0].Reason != "UnpricedGPUType" {
@@ -412,25 +412,25 @@ func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:       gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseUnknown {
 		t.Fatalf("expected Unknown phase, got %s", got.Status.Phase)
 	}
 	if len(got.Status.EnforcedResources) != 0 {
@@ -455,40 +455,40 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 	defer prom.Close()
 
 	scheme := newScheme(t)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:       gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:       gpubudgetv1alpha1.PeriodMonthly,
 			DollarsLimit: float64Ptr(1000),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
 	// First reconcile: no rate configured yet.
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	var unknown gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &unknown); err != nil {
+	var unknown gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &unknown); err != nil {
 		t.Fatal(err)
 	}
-	if unknown.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+	if unknown.Status.Phase != gpubudgetv1alpha1.PhaseUnknown {
 		t.Fatalf("expected Unknown phase before the rate is configured, got %s", unknown.Status.Phase)
 	}
 
 	// Rate now configured (e.g. the operator restarted with --gpu-rate=H100=<usd>
 	// set) and usage is comfortably under the $1000 limit.
 	r.GPURates = GPURates{"H100": 1.10}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after rate configured: %v", err)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseCompliant {
 		t.Fatalf("expected Compliant phase once the rate is fixed and usage is under budget, got %s", got.Status.Phase)
 	}
 }
@@ -501,7 +501,7 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 // the rate gets configured and usage happens to read as back under budget,
 // the quota must still report Enforced (and the workload must still be at
 // 0 replicas) rather than silently flipping to Compliant with nothing ever
-// having gone through gpuquota.io/reset. Keying stickiness off Phase alone
+// having gone through gpubudget.io/reset. Keying stickiness off Phase alone
 // (instead of len(EnforcedResources) > 0) would make this test fail, since
 // markFailed's Phase=Unknown would erase the "was Enforced" signal.
 func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.T) {
@@ -510,27 +510,27 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 			DollarsLimit:  float64Ptr(1000),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
 	// First reconcile: over the GPU-hours limit, A100 is priced - enforces
 	// normally.
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	var enforced gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &enforced); err != nil {
+	var enforced gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &enforced); err != nil {
 		t.Fatal(err)
 	}
-	if enforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if enforced.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
 	}
 
@@ -542,14 +542,14 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 	r.PrometheusURL = mixedProm.URL
 	r.promClient = nil
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile with unpriced H100 usage: %v", err)
 	}
-	var unknown gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &unknown); err != nil {
+	var unknown gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &unknown); err != nil {
 		t.Fatal(err)
 	}
-	if unknown.Status.Phase != gpuquotav1alpha1.PhaseUnknown {
+	if unknown.Status.Phase != gpubudgetv1alpha1.PhaseUnknown {
 		t.Fatalf("expected Unknown phase while H100 is unpriced, got %s", unknown.Status.Phase)
 	}
 	if len(unknown.Status.EnforcedResources) != 1 {
@@ -573,15 +573,15 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 	r.promClient = nil
 	r.GPURates["H100"] = 1.10
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after H100 priced and usage drops: %v", err)
 	}
 
-	var final gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &final); err != nil {
+	var final gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &final); err != nil {
 		t.Fatal(err)
 	}
-	if final.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if final.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected phase to remain Enforced (sticky via EnforcedResources) despite usage now reading under budget - only reset lifts enforcement, got %s", final.Status.Phase)
 	}
 	if len(final.Status.EnforcedResources) != 1 {
@@ -593,7 +593,7 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 		t.Fatal(err)
 	}
 	if *gotDep.Spec.Replicas != 0 {
-		t.Fatalf("expected deployment to remain at 0 replicas - it was never restored via gpuquota.io/reset, got %d", *gotDep.Spec.Replicas)
+		t.Fatalf("expected deployment to remain at 0 replicas - it was never restored via gpubudget.io/reset, got %d", *gotDep.Spec.Replicas)
 	}
 }
 
@@ -603,30 +603,30 @@ func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var afterEnforce gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterEnforce); err != nil {
+	var afterEnforce gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterEnforce); err != nil {
 		t.Fatal(err)
 	}
-	if afterEnforce.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if afterEnforce.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase, got %s", afterEnforce.Status.Phase)
 	}
 
 	// Manually restore the deployment to simulate an admin fixing things
-	// without touching the GpuQuota - the operator should re-enforce it,
+	// without touching the GpuBudget - the operator should re-enforce it,
 	// since only the reset annotation lifts enforcement.
 	var gotDep appsv1.Deployment
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDep); err != nil {
@@ -647,15 +647,15 @@ func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
 	r.PrometheusURL = lowUsageProm.URL
 	r.promClient = nil // force a new client for the new address
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after usage drop: %v", err)
 	}
 
-	var stillEnforced gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &stillEnforced); err != nil {
+	var stillEnforced gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &stillEnforced); err != nil {
 		t.Fatal(err)
 	}
-	if stillEnforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if stillEnforced.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected phase to remain Enforced despite usage dropping under budget, got %s", stillEnforced.Status.Phase)
 	}
 
@@ -673,25 +673,25 @@ func TestReconcile_ResetAnnotationRestoresAndClearsEnforcement(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var enforced gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &enforced); err != nil {
+	var enforced gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &enforced); err != nil {
 		t.Fatal(err)
 	}
-	if enforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if enforced.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
 	}
 
@@ -700,25 +700,25 @@ func TestReconcile_ResetAnnotationRestoresAndClearsEnforcement(t *testing.T) {
 	// clears state even without a period boundary or usage recovering -
 	// and that it doesn't prevent immediate re-enforcement if still over
 	// budget after the restore.
-	enforced.Annotations = map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"}
+	enforced.Annotations = map[string]string{gpubudgetv1alpha1.ResetAnnotation: "true"}
 	if err := c.Update(context.Background(), &enforced); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after reset: %v", err)
 	}
 
-	var afterReset gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReset); err != nil {
+	var afterReset gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterReset); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := afterReset.Annotations[gpuquotav1alpha1.ResetAnnotation]; ok {
+	if _, ok := afterReset.Annotations[gpubudgetv1alpha1.ResetAnnotation]; ok {
 		t.Fatal("expected reset annotation to be removed after processing")
 	}
 	// Still over budget, so it re-enforces in the same pass rather than
 	// leaving the namespace uncapped.
-	if afterReset.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if afterReset.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected re-enforcement since usage is still over budget, got %s", afterReset.Status.Phase)
 	}
 
@@ -737,35 +737,35 @@ func TestReconcile_ResetAnnotationRestoresFullyWhenBackUnderBudget(t *testing.T)
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
-		Status: gpuquotav1alpha1.GpuQuotaStatus{
-			Phase: gpuquotav1alpha1.PhaseEnforced,
-			EnforcedResources: []gpuquotav1alpha1.EnforcedResource{
+		Status: gpubudgetv1alpha1.GpuBudgetStatus{
+			Phase: gpubudgetv1alpha1.PhaseEnforced,
+			EnforcedResources: []gpubudgetv1alpha1.EnforcedResource{
 				{APIVersion: "apps/v1", Kind: "Deployment", Name: "model", Action: "ScaledToZero", EnforcedAt: metav1.Now()},
 			},
 		},
 	}
 	dep.Spec.Replicas = int32Ptr(0)
-	dep.Annotations = map[string]string{"gpuquota.io/original-replicas": "3"}
-	gq.Annotations = map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"}
+	dep.Annotations = map[string]string{"gpubudget.io/original-replicas": "3"}
+	gb.Annotations = map[string]string{gpubudgetv1alpha1.ResetAnnotation: "true"}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var afterReset gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReset); err != nil {
+	var afterReset gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterReset); err != nil {
 		t.Fatal(err)
 	}
-	if afterReset.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+	if afterReset.Status.Phase != gpubudgetv1alpha1.PhaseCompliant {
 		t.Fatalf("expected Compliant phase, usage is now under budget, got %s", afterReset.Status.Phase)
 	}
 	if len(afterReset.Status.EnforcedResources) != 0 {
@@ -788,17 +788,17 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	scheme := newScheme(t)
 	barePod := gpuPod("gavin-test", "bare-gpu-pod", false)
 	ownedPod := gpuPod("gavin-test", "owned-gpu-pod", true)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(barePod, ownedPod, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(barePod, ownedPod, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -810,8 +810,8 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 		t.Fatalf("expected only the owned pod to survive, got %+v", pods.Items)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -832,17 +832,17 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	scheme := newScheme(t)
 	standaloneRS := gpuReplicaSet("gavin-test", "standalone-rs", 3, false)
 	ownedRS := gpuReplicaSet("gavin-test", "owned-rs", 3, true)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneRS, ownedRS, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneRS, ownedRS, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -853,8 +853,8 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	if *gotStandalone.Spec.Replicas != 0 {
 		t.Fatalf("expected standalone replicaset scaled to 0, got %d replicas", *gotStandalone.Spec.Replicas)
 	}
-	if gotStandalone.Annotations["gpuquota.io/original-replicas"] != "3" {
-		t.Fatalf("expected original replicas annotation to record 3, got %q", gotStandalone.Annotations["gpuquota.io/original-replicas"])
+	if gotStandalone.Annotations["gpubudget.io/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", gotStandalone.Annotations["gpubudget.io/original-replicas"])
 	}
 
 	var gotOwned appsv1.ReplicaSet
@@ -872,17 +872,17 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 
 	scheme := newScheme(t)
 	sts := gpuStatefulSet("gavin-test", "training", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -893,8 +893,8 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	if *got.Spec.Replicas != 0 {
 		t.Fatalf("expected statefulset scaled to 0, got %d replicas", *got.Spec.Replicas)
 	}
-	if got.Annotations["gpuquota.io/original-replicas"] != "3" {
-		t.Fatalf("expected original replicas annotation to record 3, got %q", got.Annotations["gpuquota.io/original-replicas"])
+	if got.Annotations["gpubudget.io/original-replicas"] != "3" {
+		t.Fatalf("expected original replicas annotation to record 3, got %q", got.Annotations["gpubudget.io/original-replicas"])
 	}
 }
 
@@ -905,17 +905,17 @@ func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
 	scheme := newScheme(t)
 	standaloneJob := gpuJob("gavin-test", "standalone-job", false)
 	ownedJob := gpuJob("gavin-test", "owned-job", true)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneJob, ownedJob, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneJob, ownedJob, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -943,17 +943,17 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "plain", 3)
 	dep.Spec.Template.Spec.Containers[0].Resources.Requests = nil // strip the GPU request
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
@@ -972,7 +972,7 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 // EnforceNamespace call to never be recorded in
 // Status.EnforcedResources - Reconcile used to bail out on the first
 // enforcement error before ever merging or persisting what had already
-// succeeded. Losing that entry means gpuquota.io/reset later finds nothing
+// succeeded. Losing that entry means gpubudget.io/reset later finds nothing
 // to restore for it: the workload stays scaled to zero forever with no
 // error ever surfaced again.
 func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing.T) {
@@ -982,14 +982,14 @@ func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	sts := gpuStatefulSet("gavin-test", "training", 1)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, sts, gq).WithStatusSubresource(gq).Build()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, sts, gb).WithStatusSubresource(gb).Build()
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Update: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 			if _, ok := obj.(*appsv1.StatefulSet); ok {
@@ -999,16 +999,16 @@ func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing
 		},
 	})
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err == nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err == nil {
 		t.Fatal("expected Reconcile to return the StatefulSet enforcement error, got nil")
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase despite the partial failure, got %s", got.Status.Phase)
 	}
 	found := false
@@ -1034,12 +1034,12 @@ func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing
 }
 
 // TestReconcile_StatusConflictIsRetriedNotDropped reproduces the other half
-// of the same bug: a resourceVersion conflict on the GpuQuota's own status
+// of the same bug: a resourceVersion conflict on the GpuBudget's own status
 // update (e.g. from a concurrent spec edit) used to make Reconcile give up
 // immediately via a plain Status().Update(), discarding this reconcile's
 // freshly computed EnforcedResources/phase entirely - the next reconcile
 // would then only recover them if the failing resource kind's capture
-// happened to succeed again, which it wouldn't (its gpuquota.io/original-*
+// happened to succeed again, which it wouldn't (its gpubudget.io/original-*
 // annotation is already set). persistStatus must instead retry against a
 // freshly re-fetched copy of the object.
 func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
@@ -1048,39 +1048,39 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
 	conflictsLeft := 1
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		SubResourceUpdate: func(ctx context.Context, cli client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 			if subResourceName == "status" && conflictsLeft > 0 {
 				conflictsLeft--
-				return apierrors.NewConflict(schema.GroupResource{Group: "gpuquota.io", Resource: "gpuquotas"}, obj.GetName(), nil)
+				return apierrors.NewConflict(schema.GroupResource{Group: "gpubudget.io", Resource: "gpubudgets"}, obj.GetName(), nil)
 			}
 			return cli.Status().Update(ctx, obj, opts...)
 		},
 	})
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v (persistStatus should have retried the single injected conflict)", err)
 	}
 	if conflictsLeft != 0 {
 		t.Fatalf("expected the injected conflict to have been consumed by a retry, conflictsLeft=%d", conflictsLeft)
 	}
 
-	var got gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &got); err != nil {
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase to have survived the retried conflict, got %s", got.Status.Phase)
 	}
 	if len(got.Status.EnforcedResources) != 1 {
@@ -1093,7 +1093,7 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 // spec.GPUHoursLimit (simulating `oc apply -f quota.yaml` with a bigger
 // number) via a plain spec Update, with NO reset annotation, must not lift
 // enforcement by itself even though usage is now back under the new limit -
-// gpuquota.io/reset is the only thing that ever lifts it (see
+// gpubudget.io/reset is the only thing that ever lifts it (see
 // TestReconcile_EnforcementIsNeverAutomaticallyLifted for the equivalent
 // usage-drops-instead-of-limit-rises case).
 func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T) {
@@ -1102,25 +1102,25 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var afterEnforce gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterEnforce); err != nil {
+	var afterEnforce gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterEnforce); err != nil {
 		t.Fatal(err)
 	}
-	if afterEnforce.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if afterEnforce.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase, got %s", afterEnforce.Status.Phase)
 	}
 
@@ -1131,15 +1131,15 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 		t.Fatal(err)
 	}
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after raising the limit: %v", err)
 	}
 
-	var afterReapply gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReapply); err != nil {
+	var afterReapply gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterReapply); err != nil {
 		t.Fatal(err)
 	}
-	if afterReapply.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if afterReapply.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected phase to remain Enforced despite the higher limit - only reset lifts enforcement, got %s", afterReapply.Status.Phase)
 	}
 	if len(afterReapply.Status.EnforcedResources) != 1 {
@@ -1158,7 +1158,7 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 // TestReconcile_ReapplyRaisingLimitThenResetFullyRestores covers the exact
 // workflow reported against a real cluster: enforce, then separately (a)
 // reapply the quota with spec.GPUHoursLimit raised above current usage and
-// (b) annotate gpuquota.io/reset=true - two independent updates, as
+// (b) annotate gpubudget.io/reset=true - two independent updates, as
 // `oc apply` followed by `oc annotate` would produce, landing before the
 // next reconcile picks either up. A single subsequent reconcile must fully
 // restore the workload and end up Compliant with EnforcedResources cleared.
@@ -1168,25 +1168,25 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
-	gq := &gpuquotav1alpha1.GpuQuota{
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "gavin-test"},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	var enforced gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &enforced); err != nil {
+	var enforced gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &enforced); err != nil {
 		t.Fatal(err)
 	}
-	if enforced.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if enforced.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected Enforced phase, got %s", enforced.Status.Phase)
 	}
 
@@ -1196,28 +1196,28 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 	if err := c.Update(context.Background(), &enforced); err != nil {
 		t.Fatal(err)
 	}
-	// ... then, separately, `oc annotate gpuquota ... gpuquota.io/reset=true`.
-	var beforeReset gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &beforeReset); err != nil {
+	// ... then, separately, `oc annotate gpubudget ... gpubudget.io/reset=true`.
+	var beforeReset gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &beforeReset); err != nil {
 		t.Fatal(err)
 	}
-	beforeReset.Annotations = map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"}
+	beforeReset.Annotations = map[string]string{gpubudgetv1alpha1.ResetAnnotation: "true"}
 	if err := c.Update(context.Background(), &beforeReset); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after reapply+reset: %v", err)
 	}
 
-	var afterReset gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &afterReset); err != nil {
+	var afterReset gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &afterReset); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := afterReset.Annotations[gpuquotav1alpha1.ResetAnnotation]; ok {
+	if _, ok := afterReset.Annotations[gpubudgetv1alpha1.ResetAnnotation]; ok {
 		t.Fatal("expected reset annotation to be removed after processing")
 	}
-	if afterReset.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+	if afterReset.Status.Phase != gpubudgetv1alpha1.PhaseCompliant {
 		t.Fatalf("expected Compliant phase, usage (50h) is now under the raised limit (1000h), got %s", afterReset.Status.Phase)
 	}
 	if len(afterReset.Status.EnforcedResources) != 0 {
@@ -1231,7 +1231,7 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 	if *gotDep.Spec.Replicas != 3 {
 		t.Fatalf("expected deployment restored to 3 replicas, got %d", *gotDep.Spec.Replicas)
 	}
-	if _, ok := gotDep.Annotations["gpuquota.io/original-replicas"]; ok {
+	if _, ok := gotDep.Annotations["gpubudget.io/original-replicas"]; ok {
 		t.Fatal("expected the deployment's original-replicas annotation removed after restore")
 	}
 }
@@ -1239,7 +1239,7 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 // TestReconcile_ResetSurvivesConflictClearingTheAnnotation reproduces a
 // third failure mode observed against a real cluster: RestoreNamespace
 // itself succeeds (the workload is genuinely restored), but the subsequent
-// plain Update that clears gpuquota.io/reset off the GpuQuota conflicts
+// plain Update that clears gpubudget.io/reset off the GpuBudget conflicts
 // (e.g. a concurrent edit bumped its resourceVersion in between). Reconcile
 // returns that error without persisting anything this pass - by design,
 // since handleManualReset returns before ever reaching persistStatus - so
@@ -1256,48 +1256,48 @@ func TestReconcile_ResetSurvivesConflictClearingTheAnnotation(t *testing.T) {
 	scheme := newScheme(t)
 	dep := gpuDeployment("gavin-test", "model", 3)
 	dep.Spec.Replicas = int32Ptr(0)
-	dep.Annotations = map[string]string{"gpuquota.io/original-replicas": "3"}
-	gq := &gpuquotav1alpha1.GpuQuota{
+	dep.Annotations = map[string]string{"gpubudget.io/original-replicas": "3"}
+	gb := &gpubudgetv1alpha1.GpuBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "quota", Namespace: "gavin-test",
-			Annotations: map[string]string{gpuquotav1alpha1.ResetAnnotation: "true"},
+			Annotations: map[string]string{gpubudgetv1alpha1.ResetAnnotation: "true"},
 		},
-		Spec: gpuquotav1alpha1.GpuQuotaSpec{
-			Period:        gpuquotav1alpha1.PeriodMonthly,
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
 			GPUHoursLimit: float64Ptr(10),
 		},
-		Status: gpuquotav1alpha1.GpuQuotaStatus{
-			Phase: gpuquotav1alpha1.PhaseEnforced,
-			EnforcedResources: []gpuquotav1alpha1.EnforcedResource{
+		Status: gpubudgetv1alpha1.GpuBudgetStatus{
+			Phase: gpubudgetv1alpha1.PhaseEnforced,
+			EnforcedResources: []gpubudgetv1alpha1.EnforcedResource{
 				{APIVersion: "apps/v1", Kind: "Deployment", Name: "model", Action: "ScaledToZero", EnforcedAt: metav1.Now()},
 			},
 		},
 	}
-	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gq).WithStatusSubresource(gq).Build()
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
 	conflictsLeft := 1
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Update: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			if q, ok := obj.(*gpuquotav1alpha1.GpuQuota); ok && q.Annotations[gpuquotav1alpha1.ResetAnnotation] != "true" && conflictsLeft > 0 {
+			if q, ok := obj.(*gpubudgetv1alpha1.GpuBudget); ok && q.Annotations[gpubudgetv1alpha1.ResetAnnotation] != "true" && conflictsLeft > 0 {
 				// This is specifically handleManualReset's own
 				// annotation-clearing Update (the reset annotation is
 				// already gone from the object being written) - not the
 				// test's own setup writes above.
 				conflictsLeft--
-				return apierrors.NewConflict(schema.GroupResource{Group: "gpuquota.io", Resource: "gpuquotas"}, obj.GetName(), nil)
+				return apierrors.NewConflict(schema.GroupResource{Group: "gpubudget.io", Resource: "gpubudgets"}, obj.GetName(), nil)
 			}
 			return cli.Update(ctx, obj, opts...)
 		},
 	})
 
-	r := &GpuQuotaReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
 
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err == nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err == nil {
 		t.Fatal("expected the first reconcile to surface the injected conflict clearing the reset annotation")
 	}
 
 	// The workload must already be restored - RestoreNamespace completed
-	// successfully before the conflict on the GpuQuota's own annotation.
+	// successfully before the conflict on the GpuBudget's own annotation.
 	var gotDepMidway appsv1.Deployment
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(dep), &gotDepMidway); err != nil {
 		t.Fatal(err)
@@ -1306,30 +1306,30 @@ func TestReconcile_ResetSurvivesConflictClearingTheAnnotation(t *testing.T) {
 		t.Fatalf("expected deployment already restored to 3 replicas even though the reset overall failed, got %d", *gotDepMidway.Spec.Replicas)
 	}
 
-	var midway gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &midway); err != nil {
+	var midway gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &midway); err != nil {
 		t.Fatal(err)
 	}
-	if midway.Annotations[gpuquotav1alpha1.ResetAnnotation] != "true" {
+	if midway.Annotations[gpubudgetv1alpha1.ResetAnnotation] != "true" {
 		t.Fatal("expected the reset annotation to remain present after the failed clear, ready for a retry")
 	}
-	if midway.Status.Phase != gpuquotav1alpha1.PhaseEnforced {
+	if midway.Status.Phase != gpubudgetv1alpha1.PhaseEnforced {
 		t.Fatalf("expected status to remain unchanged (Enforced) since Reconcile returned before persistStatus, got %s", midway.Status.Phase)
 	}
 
 	// Simulate controller-runtime's error-requeue with a second Reconcile call.
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gq)}); err != nil {
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("expected the retried reconcile to succeed once the conflict clears, got: %v", err)
 	}
 
-	var final gpuquotav1alpha1.GpuQuota
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gq), &final); err != nil {
+	var final gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &final); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := final.Annotations[gpuquotav1alpha1.ResetAnnotation]; ok {
+	if _, ok := final.Annotations[gpubudgetv1alpha1.ResetAnnotation]; ok {
 		t.Fatal("expected reset annotation removed after the retry succeeds")
 	}
-	if final.Status.Phase != gpuquotav1alpha1.PhaseCompliant {
+	if final.Status.Phase != gpubudgetv1alpha1.PhaseCompliant {
 		t.Fatalf("expected Compliant phase after the retry, got %s", final.Status.Phase)
 	}
 	if len(final.Status.EnforcedResources) != 0 {
@@ -1350,12 +1350,12 @@ func TestPeriodStart(t *testing.T) {
 	now := time.Date(2026, time.August, 11, 15, 30, 0, 0, time.UTC)
 
 	cases := []struct {
-		period gpuquotav1alpha1.BudgetPeriod
+		period gpubudgetv1alpha1.BudgetPeriod
 		want   time.Time
 	}{
-		{gpuquotav1alpha1.PeriodDaily, time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)},
-		{gpuquotav1alpha1.PeriodWeekly, time.Date(2026, time.August, 10, 0, 0, 0, 0, time.UTC)}, // Monday
-		{gpuquotav1alpha1.PeriodMonthly, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)},
+		{gpubudgetv1alpha1.PeriodDaily, time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)},
+		{gpubudgetv1alpha1.PeriodWeekly, time.Date(2026, time.August, 10, 0, 0, 0, 0, time.UTC)}, // Monday
+		{gpubudgetv1alpha1.PeriodMonthly, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	for _, c := range cases {
 		got := periodStart(c.period, now)

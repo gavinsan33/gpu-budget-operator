@@ -1,4 +1,4 @@
-module github.com/gsanders/gpu-quota-operator
+module github.com/gsanders/gpu-budget-operator
 
 go 1.26.5
 

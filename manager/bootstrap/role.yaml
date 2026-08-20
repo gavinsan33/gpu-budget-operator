@@ -1,12 +1,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: gpu-quota-operator-manager-role
+  name: gpu-budget-operator-manager-role
 rules:
 - apiGroups:
-  - gpuquota.io
+  - gpubudget.io
   resources:
-  - gpuquotas
+  - gpubudgets
   verbs:
   - get
   - list
@@ -16,17 +16,17 @@ rules:
   - patch
   - delete
 - apiGroups:
-  - gpuquota.io
+  - gpubudget.io
   resources:
-  - gpuquotas/status
+  - gpubudgets/status
   verbs:
   - get
   - update
   - patch
 - apiGroups:
-  - gpuquota.io
+  - gpubudget.io
   resources:
-  - gpuquotas/finalizers
+  - gpubudgets/finalizers
   verbs:
   - update
 - apiGroups:

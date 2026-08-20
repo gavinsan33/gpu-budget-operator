@@ -1,12 +1,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: gpu-quota-operator-manager-rolebinding
+  name: gpu-budget-operator-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: gpu-quota-operator-manager-role
+  name: gpu-budget-operator-manager-role
 subjects:
 - kind: ServiceAccount
-  name: gpu-quota-operator-controller-manager
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator-controller-manager
+  namespace: gpu-budget-operator-system

@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: gpuquotas.gpuquota.io
+  name: gpubudgets.gpubudget.io
 spec:
-  group: gpuquota.io
+  group: gpubudget.io
   names:
-    kind: GpuQuota
-    listKind: GpuQuotaList
-    plural: gpuquotas
+    kind: GpuBudget
+    listKind: GpuBudgetList
+    plural: gpubudgets
     shortNames:
-    - gq
-    singular: gpuquota
+    - gb
+    singular: gpubudget
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -55,8 +55,8 @@ spec:
             type: object
           spec:
             description: |-
-              GpuQuotaSpec defines a cumulative GPU budget for the namespace the
-              GpuQuota lives in, over a recurring calendar period.
+              GpuBudgetSpec defines a cumulative GPU budget for the namespace the
+              GpuBudget lives in, over a recurring calendar period.
             properties:
               checkInterval:
                 default: 15m
@@ -114,7 +114,7 @@ spec:
               rule: has(self.gpuHoursLimit) || has(self.dollarsLimit)
           status:
             description: |-
-              GpuQuotaStatus reports cumulative usage for the current period and any
+              GpuBudgetStatus reports cumulative usage for the current period and any
               enforcement taken.
             properties:
               conditions:

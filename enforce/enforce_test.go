@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	gpuquotav1alpha1 "github.com/gsanders/gpu-quota-operator/v1alpha1"
+	gpubudgetv1alpha1 "github.com/gsanders/gpu-budget-operator/v1alpha1"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -179,8 +179,8 @@ func zeroedReplicaSet(namespace, name string, originalReplicas int32) *appsv1.Re
 	return rs
 }
 
-func enforcedResource(kind, name string) gpuquotav1alpha1.EnforcedResource {
-	return gpuquotav1alpha1.EnforcedResource{Kind: kind, Name: name}
+func enforcedResource(kind, name string) gpubudgetv1alpha1.EnforcedResource {
+	return gpubudgetv1alpha1.EnforcedResource{Kind: kind, Name: name}
 }
 
 // TestRestoreNamespace_ContinuesPastOneEntrysFailure reproduces the
@@ -212,7 +212,7 @@ func TestRestoreNamespace_ContinuesPastOneEntrysFailure(t *testing.T) {
 	})
 
 	e := &Enforcer{Client: c}
-	enforced := []gpuquotav1alpha1.EnforcedResource{
+	enforced := []gpubudgetv1alpha1.EnforcedResource{
 		enforcedResource("Deployment", "dep"),
 		enforcedResource("StatefulSet", "sts"),
 		enforcedResource("ReplicaSet", "rs"),
@@ -278,7 +278,7 @@ func TestRestoreNamespace_RetryAfterPartialFailureFinishesTheRest(t *testing.T) 
 	})
 
 	e := &Enforcer{Client: c}
-	enforced := []gpuquotav1alpha1.EnforcedResource{
+	enforced := []gpubudgetv1alpha1.EnforcedResource{
 		enforcedResource("Deployment", "dep"),
 		enforcedResource("StatefulSet", "sts"),
 	}

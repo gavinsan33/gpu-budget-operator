@@ -1,5 +1,5 @@
 # enforce.go: spec.replicas -> 0, original value saved in
-# gpuquota.io/original-replicas. Reversible via gpuquota.io/reset.
+# gpubudget.io/original-replicas. Reversible via gpubudget.io/reset.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

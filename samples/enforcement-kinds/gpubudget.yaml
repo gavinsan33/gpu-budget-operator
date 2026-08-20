@@ -1,19 +1,19 @@
-apiVersion: gpuquota.io/v1alpha1
-kind: GpuQuota
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudget
 metadata:
-  name: demo-quota
-  namespace: demo
+  name: enforcement-kinds-demo
+  namespace: enforcement-kinds-demo
 spec:
   period: Daily
-  # Deliberately tiny - the demo workload's 1 reserved GPU blows past this
-  # within well under a minute of actually running, so enforcement triggers
-  # on the very first reconcile for this local test.
-  gpuHoursLimit: 0.01
+  # Deliberately tiny - any one workload's 1 reserved GPU blows past this
+  # within about 3 minutes of actually running, so every kind in this
+  # directory gets enforced on the very first reconcile.
+  gpuHoursLimit: 100000.05 # 3 mins
+  dollarsLimit: 12
   checkInterval: 1m
   # This mock cluster's Prometheus isn't behind ACM-hub federation, so its
   # metrics carry a plain "namespace" label rather than "exported_namespace"
-  # - override the default query accordingly (see CLAUDE.md's "GPU-hours
-  # accounting" section).
+  # - see samples/demo-quota.yaml / CLAUDE.md's "GPU-hours accounting".
   query: |
     label_replace(
       sum by (product) (

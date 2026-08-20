@@ -5,7 +5,7 @@
 #
 # enforce.go: minReplicas/maxReplicas set to 0 on every component present
 # (just "predictor" here). Original values marshaled to JSON into
-# gpuquota.io/original-replica-spec. Reversible.
+# gpubudget.io/original-replica-spec. Reversible.
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:

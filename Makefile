@@ -3,8 +3,8 @@
 # and `deploy` targets below. IMAGE_NAMESPACE/IMAGE_NAME must match
 # manager/bootstrap/namespace.yaml and manager/deploy/build.yaml's
 # BuildConfig/ImageStream name.
-IMAGE_NAMESPACE ?= gpu-quota-operator-system
-IMAGE_NAME ?= gpu-quota-operator
+IMAGE_NAMESPACE ?= gpu-budget-operator-system
+IMAGE_NAME ?= gpu-budget-operator
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -30,7 +30,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate CRD manifests.
-	# allowDangerousTypes=true: GpuQuotaSpec/Status use float64 for GPU-hours/dollar
+	# allowDangerousTypes=true: GpuBudgetSpec/Status use float64 for GPU-hours/dollar
 	# amounts (fractional GPU-hours and cents matter here); controller-gen otherwise
 	# refuses float fields since JSON-number precision varies across client languages.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./v1alpha1/..." output:crd:artifacts:config=config/crd
@@ -49,7 +49,7 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: ## Run tests.
-	go test -coverprofile cover.out $$(go list ./... | grep -v '/v1alpha1$$' | grep -v 'github.com/gsanders/gpu-quota-operator$$')
+	go test -coverprofile cover.out $$(go list ./... | grep -v '/v1alpha1$$' | grep -v 'github.com/gsanders/gpu-budget-operator$$')
 
 ##@ Build
 
@@ -96,8 +96,8 @@ run: fmt vet ## Run from your host (requires cluster access).
 # query joins against) will silently read as empty.
 
 KIND_CLUSTER_NAME ?= mock-openshift
-KIND_IMAGE ?= localhost/gpu-quota-operator:dev
-KIND_IMAGE_TAR ?= /tmp/gpu-quota-operator-kind.tar
+KIND_IMAGE ?= localhost/gpu-budget-operator:dev
+KIND_IMAGE_TAR ?= /tmp/gpu-budget-operator-kind.tar
 
 .PHONY: kind-image
 kind-image: ## Build the operator image locally and load it into the kind node - no registry, no OpenShift Build API required.
@@ -114,8 +114,8 @@ kind-deploy: manifests kind-image ## Build+load the image, then deploy (or redep
 	oc apply -f manager/bootstrap/role_binding.yaml
 	oc apply -f manager/deploy/service_account.yaml
 	oc apply -f manager/deploy/deployment.kind.yaml
-	oc -n gpu-quota-operator-system rollout restart deployment/gpu-quota-operator-controller-manager
-	oc -n gpu-quota-operator-system rollout status deployment/gpu-quota-operator-controller-manager --timeout=120s
+	oc -n gpu-budget-operator-system rollout restart deployment/gpu-budget-operator-controller-manager
+	oc -n gpu-budget-operator-system rollout status deployment/gpu-budget-operator-controller-manager --timeout=120s
 
 .PHONY: kind-undeploy
 kind-undeploy: ## Remove the in-cluster operator Deployment. Leaves the kind cluster, its RBAC/namespace, and the CRD in place.
@@ -128,7 +128,7 @@ kind-undeploy: ## Remove the in-cluster operator Deployment. Leaves the kind clu
 # every invocation regardless of whether they changed, so they need
 # elevated RBAC every single time otherwise) and a routine `deploy` that
 # only touches namespace-scoped objects a non-admin edit/admin role in
-# gpu-quota-operator-system can apply repeatedly. Run `bootstrap` once (or
+# gpu-budget-operator-system can apply repeatedly. Run `bootstrap` once (or
 # whenever the CRD/RBAC itself changes); run `deploy` as often as you like.
 
 .PHONY: bootstrap

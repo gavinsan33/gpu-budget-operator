@@ -1,5 +1,5 @@
-apiVersion: gpuquota.io/v1alpha1
-kind: GpuQuota
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudget
 metadata:
   name: gavin-test-quota
   namespace: gavin-test

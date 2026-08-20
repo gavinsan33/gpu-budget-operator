@@ -1,8 +1,8 @@
-# gpu-quota-operator
+# gpu-budget-operator
 
 A Kubernetes operator that enforces per-namespace GPU budgets over a
 recurring calendar billing period (daily, weekly, or monthly). Namespaces
-opt in by creating a `GpuQuota` custom resource specifying a cumulative
+opt in by creating a `GpuBudget` custom resource specifying a cumulative
 GPU-hours and/or dollar budget for that period. The operator continuously
 tracks cumulative GPU-hours consumed (by default via GPU *reservation* time,
 matching typical GPU-cluster billing — you're charged for what you
@@ -13,15 +13,15 @@ are suspended; InferenceServices have their replica bounds zeroed; and
 standalone GPU Pods are deleted outright. Enforcement is never lifted
 automatically — not when a new period starts, and not if usage would
 otherwise read as compliant — only a human clearing the
-`gpuquota.io/reset` annotation restores enforced workloads.
+`gpubudget.io/reset` annotation restores enforced workloads.
 
-## The `GpuQuota` CRD
+## The `GpuBudget` CRD
 
-`GpuQuota` is a **namespaced** custom resource (group `gpuquota.io`,
-version `v1alpha1`, short name `gq`). Creating one in a namespace is the
+`GpuBudget` is a **namespaced** custom resource (group `gpubudget.io`,
+version `v1alpha1`, short name `gb`). Creating one in a namespace is the
 opt-in mechanism — the operator only monitors and enforces namespaces that
-have a `GpuQuota` object; everything else is left alone. There's no
-restriction on how many `GpuQuota` objects a namespace can have, but in
+have a `GpuBudget` object; everything else is left alone. There's no
+restriction on how many `GpuBudget` objects a namespace can have, but in
 practice one per namespace is the intended usage since each is reconciled
 independently against the same namespace's workloads.
 
@@ -52,8 +52,8 @@ independently against the same namespace's workloads.
 ### Example
 
 ```yaml
-apiVersion: gpuquota.io/v1alpha1
-kind: GpuQuota
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudget
 metadata:
   name: gavin-test-quota
   namespace: gavin-test
@@ -86,11 +86,11 @@ Enforcement is **never** lifted automatically — not when usage would
 otherwise read as compliant, and not when a new billing period starts
 (cumulative usage never decreases within a period, and a new period alone
 doesn't mean the underlying cost problem was addressed). The only way to
-restore enforced workloads is to set the `gpuquota.io/reset`
-annotation to `"true"` on the `GpuQuota`:
+restore enforced workloads is to set the `gpubudget.io/reset`
+annotation to `"true"` on the `GpuBudget`:
 
 ```
-oc annotate gpuquota gavin-test-quota -n gavin-test gpuquota.io/reset=true
+oc annotate gpubudget gavin-test-quota -n gavin-test gpubudget.io/reset=true
 ```
 
 The operator restores everything in `status.enforcedResources` to its
@@ -122,7 +122,7 @@ clean slate to try again (e.g. after raising the limit).
 - If targeting OpenShift's built-in monitoring (the `manager/deploy`
   default): see "Prometheus authentication" below for the RBAC/token/TLS
   pieces required.
-- If any `GpuQuota` sets `spec.dollarsLimit`: real `$/GPU-hour` rates set via
+- If any `GpuBudget` sets `spec.dollarsLimit`: real `$/GPU-hour` rates set via
   the operator's `--gpu-rate=<family>=<usd>` flags (one per GPU family, e.g.
   `--gpu-rate=A100=1.70`) for every GPU family namespaces actually use — see
   "Install" below.
@@ -134,7 +134,7 @@ clean slate to try again (e.g. after raising the limit).
 
 ## How it works
 
-1. A namespace opts in by creating a `GpuQuota` resource in that namespace
+1. A namespace opts in by creating a `GpuBudget` resource in that namespace
    (see `samples/`), setting `spec.period` and at least one of
    `spec.gpuHoursLimit`/`spec.dollarsLimit`.
 2. Each reconcile, the operator queries Prometheus for cumulative GPU-hours
@@ -154,7 +154,7 @@ clean slate to try again (e.g. after raising the limit).
 4. Once enforced, the operator keeps re-applying enforcement on every
    reconcile (catching any newly created GPU workloads too) regardless of
    what usage now reads — enforcement is never lifted by usage dropping or
-   a new period starting. Only the `gpuquota.io/reset` annotation
+   a new period starting. Only the `gpubudget.io/reset` annotation
    restores things (see above).
 
 ### Enforcement actions by workload kind
@@ -164,12 +164,12 @@ operator uses a different mechanism per kind rather than one generic action:
 
 | Workload kind | "Kill" mechanism | Reversible? | Restore annotation |
 |---|---|---|---|
-| `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
-| `StatefulSet` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
-| Standalone `ReplicaSet` (`apps/v1`, no owner reference) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpuquota.io/original-replicas` |
-| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.io/original-suspend` |
-| Standalone `Job` (`batch/v1`, no owner reference) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpuquota.io/original-suspend` |
-| `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpuquota.io/original-replica-spec` |
+| `Deployment` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpubudget.io/original-replicas` |
+| `StatefulSet` (`apps/v1`) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpubudget.io/original-replicas` |
+| Standalone `ReplicaSet` (`apps/v1`, no owner reference) | `spec.replicas` set to `0` | Yes — original replica count is saved and restored | `gpubudget.io/original-replicas` |
+| `JobSet` (`jobset.x-k8s.io/v1alpha2`) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpubudget.io/original-suspend` |
+| Standalone `Job` (`batch/v1`, no owner reference) | `spec.suspend` set to `true` | Yes — native suspend/resume | `gpubudget.io/original-suspend` |
+| `InferenceService` (`serving.kserve.io/v1beta1`) | `minReplicas`/`maxReplicas` set to `0` on every present component (`predictor`, `transformer`, `explainer`) | Yes — original per-component min/max (or "was unset") saved and restored | `gpubudget.io/original-replica-spec` |
 | Standalone `Pod` (`v1`, no owner reference) | Deleted | **No** — a bare Pod has no scale/suspend primitive, so this is a hard delete | none (nothing to restore) |
 
 Only workloads that actually request `nvidia.com/gpu` (in any container, at
@@ -194,7 +194,7 @@ details.
 
 ## Prometheus authentication
 
-Every `GpuQuota` in the cluster is evaluated against one single,
+Every `GpuBudget` in the cluster is evaluated against one single,
 cluster-wide Prometheus, set once via `--prometheus-url` - there's no
 per-namespace override. The default `manager/` manifests target OpenShift's
 built-in monitoring stack (Thanos Querier over HTTPS), which requires both a
@@ -215,7 +215,7 @@ Bearer token and a trusted TLS certificate - the operator does not get this
    `manager/deploy/service-ca-configmap.yaml` creates a ConfigMap annotated
    for OpenShift's service-ca operator to inject the cluster's
    service-serving CA into; `manager/deploy/deployment.yaml` mounts it at
-   `/etc/gpu-quota-operator/service-ca/service-ca.crt`, and the operator
+   `/etc/gpu-budget-operator/service-ca/service-ca.crt`, and the operator
    always looks for a CA bundle at that fixed path, trusting it if present
    and falling back to the system trust store if not. There's no way to
    disable TLS verification - if you need that for local testing against a
@@ -248,7 +248,7 @@ an unauthenticated request both happen automatically.
    silently undercounting cost.
 3. `make manifests` — regenerate the CRD from the Go types.
 4. `make test` — run unit tests.
-5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuQuota`
+5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuBudget`
    CRD plus the Namespace and cluster-scoped RBAC
    (`manager/bootstrap/`). Only needs re-running if the CRD or that RBAC
    changes.
@@ -258,7 +258,7 @@ an unauthenticated request both happen automatically.
    image in-cluster from git source, and rolls out the result. Safe to run
    repeatedly — see `make build-image` if you just want to rebuild without a
    full redeploy.
-7. Apply a `GpuQuota` in any namespace you want monitored, e.g.
+7. Apply a `GpuBudget` in any namespace you want monitored, e.g.
    `oc apply -f samples/gavin-test-quota.yaml`.
 
 ## Uninstall

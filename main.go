@@ -13,8 +13,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/gsanders/gpu-quota-operator/controllers"
-	gpuquotav1alpha1 "github.com/gsanders/gpu-quota-operator/v1alpha1"
+	"github.com/gsanders/gpu-budget-operator/controllers"
+	gpubudgetv1alpha1 "github.com/gsanders/gpu-budget-operator/v1alpha1"
 )
 
 var (
@@ -23,7 +23,7 @@ var (
 )
 
 func init() {
-	utilruntime.Must(gpuquotav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gpubudgetv1alpha1.AddToScheme(scheme))
 }
 
 // gpuRatesFlag accumulates repeated --gpu-rate=<family>=<usd> flags into a
@@ -70,10 +70,10 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&prometheusURL, "prometheus-url", "",
-		"The single, cluster-wide Prometheus/Thanos base URL every GpuQuota is evaluated against.")
+		"The single, cluster-wide Prometheus/Thanos base URL every GpuBudget is evaluated against.")
 	flag.Var(gpuRates, "gpu-rate",
 		"USD cost per GPU-hour for a GPU family, as <family>=<usd> (e.g. A100=1.70). "+
-			"Repeatable - pass once per GPU family any GpuQuota with spec.dollarsLimit might use. "+
+			"Repeatable - pass once per GPU family any GpuBudget with spec.dollarsLimit might use. "+
 			"Matched against gpuType by family prefix, so one A100 rate covers every A100 SKU.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -85,20 +85,20 @@ func main() {
 		Scheme:           scheme,
 		Metrics:          metricsserver.Options{BindAddress: metricsAddr},
 		LeaderElection:   enableLeaderElection,
-		LeaderElectionID: "gpu-quota-operator.gpuquota.io",
+		LeaderElectionID: "gpu-budget-operator.gpubudget.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	if err := (&controllers.GpuQuotaReconciler{
+	if err := (&controllers.GpuBudgetReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		PrometheusURL: prometheusURL,
 		GPURates:      gpuRates.rates,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GpuQuota")
+		setupLog.Error(err, "unable to create controller", "controller", "GpuBudget")
 		os.Exit(1)
 	}
 

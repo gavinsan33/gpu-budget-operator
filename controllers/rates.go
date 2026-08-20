@@ -16,7 +16,7 @@ type GPURates map[string]float64
 
 // RateFor returns the USD-per-GPU-hour rate for gpuType and whether it's
 // configured. A zero/unset rate is treated as "not configured" rather than
-// "free" - a GpuQuota with spec.dollarsLimit whose usage includes an
+// "free" - a GpuBudget with spec.dollarsLimit whose usage includes an
 // unpriced type fails loudly instead of silently undercounting cost.
 //
 // Matches by family prefix, not exact equality: the default GPU-hours

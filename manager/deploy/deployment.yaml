@@ -1,8 +1,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: gpu-quota-operator-controller-manager
-  namespace: gpu-quota-operator-system
+  name: gpu-budget-operator-controller-manager
+  namespace: gpu-budget-operator-system
   labels:
     control-plane: controller-manager
 spec:
@@ -15,7 +15,7 @@ spec:
       labels:
         control-plane: controller-manager
     spec:
-      serviceAccountName: gpu-quota-operator-controller-manager
+      serviceAccountName: gpu-budget-operator-controller-manager
       containers:
       - name: manager
         # Resolves to whatever build.yaml's BuildConfig most recently built
@@ -23,13 +23,13 @@ spec:
         # `oc rollout restart` after a build is required to actually pick up
         # a new image, since plain apps/v1 Deployments (unlike
         # DeploymentConfigs) have no ImageChange trigger of their own.
-        image: image-registry.openshift-image-registry.svc:5000/gpu-quota-operator-system/gpu-quota-operator:latest
+        image: image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator:latest
         imagePullPolicy: Always
         command:
         - /manager
         args:
         - --leader-elect
-        # The one, cluster-wide Prometheus every GpuQuota is evaluated
+        # The one, cluster-wide Prometheus every GpuBudget is evaluated
         # against - there is no per-namespace override. Auth (Bearer token)
         # and TLS trust (the mounted CA bundle below, or the system trust
         # store if absent) are always automatic, with no flag to change
@@ -37,7 +37,7 @@ spec:
         # stack, which requires the cluster-monitoring-view
         # ClusterRoleBinding (../bootstrap/monitoring_rolebinding.yaml).
         - --prometheus-url=https://thanos-querier.openshift-monitoring.svc:9091
-        # $/GPU-hour rates, only required if any GpuQuota sets spec.dollarsLimit
+        # $/GPU-hour rates, only required if any GpuBudget sets spec.dollarsLimit
         # and actually uses that GPU family - REPLACE these placeholder values
         # with your real rates before relying on dollarsLimit enforcement.
         # Repeatable: add another --gpu-rate=<family>=<usd> for any GPU family
@@ -47,7 +47,7 @@ spec:
         - --gpu-rate=V100=0.30
         volumeMounts:
         - name: service-ca
-          mountPath: /etc/gpu-quota-operator/service-ca
+          mountPath: /etc/gpu-budget-operator/service-ca
           readOnly: true
         resources:
           limits:
@@ -65,6 +65,6 @@ spec:
       volumes:
       - name: service-ca
         configMap:
-          name: gpu-quota-operator-service-ca
+          name: gpu-budget-operator-service-ca
       securityContext:
         runAsNonRoot: true
