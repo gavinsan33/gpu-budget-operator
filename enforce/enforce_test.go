@@ -184,7 +184,7 @@ func enforcedResource(kind, name string) gpubudgetv1alpha1.EnforcedResource {
 }
 
 // TestRestoreNamespace_ContinuesPastOneEntrysFailure reproduces the
-// "reapply the quota to raise the limit, then reset" scenario reported
+// "reapply the budget to raise the limit, then reset" scenario reported
 // against a real cluster: restoring a namespace with several previously
 // enforced resources, where one resource's restore fails (a persistent
 // conflict, here simulated on the StatefulSet). RestoreNamespace used to
