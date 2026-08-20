@@ -7,14 +7,14 @@ spec:
   period: Weekly
   gpuHoursLimit: 200
   # Cap on cost too - whichever of gpuHoursLimit/dollarsLimit is exceeded
-  # first triggers enforcement. Requires the operator's --gpu-rate-* flags
-  # to price every GPU type this namespace actually uses.
+  # first triggers enforcement. Requires GpuBudgetOperatorConfig's
+  # spec.gpuRates to price every GPU type this namespace actually uses.
   dollarsLimit: 5000
   # Override the default reservation-based accounting query, e.g. to switch
   # to DCGM utilization-based GPU-hours instead. Must return one sample per
   # GPU type, labeled "gpuType". (Every GpuBudget is evaluated against the
-  # same operator-wide Prometheus - see --prometheus-url - only the query
-  # itself is overridable per-namespace.)
+  # same operator-wide Prometheus - see GpuBudgetOperatorConfig's
+  # spec.prometheusURL - only the query itself is overridable per-namespace.)
   query: |
     label_replace(
       sum by (modelName) (

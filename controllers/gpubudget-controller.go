@@ -14,7 +14,9 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/gsanders/gpu-budget-operator/enforce"
 	"github.com/gsanders/gpu-budget-operator/metrics"
@@ -32,28 +34,19 @@ type GpuBudgetReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// PrometheusURL is the single, cluster-wide Prometheus/Thanos endpoint
-	// every GpuBudget is evaluated against. Set once via the operator's
-	// --prometheus-url flag - there is no per-namespace override, since
-	// splitting GPU accounting across multiple Prometheus instances would
-	// make budgets impossible to compare or reason about cluster-wide.
-	PrometheusURL string
-
-	// GPURates is the operator-wide $/GPU-hour rate table used to compute
-	// spec.dollarsLimit compliance.
-	GPURates GPURates
-
 	// Enforcer performs the actual scale-down/suspend/restore operations.
 	// Defaults to &enforce.Enforcer{Client: r.Client} on first use if nil.
 	Enforcer *enforce.Enforcer
 
-	promClientMu sync.Mutex
-	promClient   *metrics.Client
+	promClientMu  sync.Mutex
+	promClient    *metrics.Client
+	promClientURL string
 }
 
 // +kubebuilder:rbac:groups=gpubudget.io,resources=gpubudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gpubudget.io,resources=gpubudgets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gpubudget.io,resources=gpubudgets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=gpubudget.io,resources=gpubudgetoperatorconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
@@ -77,7 +70,14 @@ func (r *GpuBudgetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	promClient, err := r.prometheusClient()
+	var cfg gpubudgetv1alpha1.GpuBudgetOperatorConfig
+	if err := r.Get(ctx, client.ObjectKey{Name: gpubudgetv1alpha1.SingletonConfigName}, &cfg); err != nil {
+		return r.markFailed(ctx, &gb, "OperatorConfigMissing", fmt.Errorf(
+			"fetching GpuBudgetOperatorConfig %q: %w (create one cluster-wide - see samples/gpubudgetoperatorconfig.yaml)",
+			gpubudgetv1alpha1.SingletonConfigName, err))
+	}
+
+	promClient, err := r.prometheusClient(cfg.Spec.PrometheusURL)
 	if err != nil {
 		return r.markFailed(ctx, &gb, "PrometheusClientError", err)
 	}
@@ -91,7 +91,8 @@ func (r *GpuBudgetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.markFailed(ctx, &gb, "MetricsQueryFailed", err)
 	}
 
-	totalHours, totalDollars, usageByType, err := r.computeUsage(hoursByType, gb.Spec.DollarsLimit != nil, gb.Namespace)
+	rates := ratesFromSpec(cfg.Spec.GPURates)
+	totalHours, totalDollars, usageByType, err := r.computeUsage(hoursByType, gb.Spec.DollarsLimit != nil, gb.Namespace, rates)
 	if err != nil {
 		return r.markFailed(ctx, &gb, "UnpricedGPUType", err)
 	}
@@ -204,15 +205,15 @@ func (r *GpuBudgetReconciler) persistStatus(ctx context.Context, gb *gpubudgetv1
 // prices each type via r.GPURates - returning an error naming the first
 // unpriced GPU type found, so a misconfigured dollarsLimit fails loudly
 // rather than silently undercounting cost.
-func (r *GpuBudgetReconciler) computeUsage(hoursByType map[string]float64, needsDollars bool, namespace string) (totalHours, totalDollars float64, usage []gpubudgetv1alpha1.GPUTypeUsage, err error) {
+func (r *GpuBudgetReconciler) computeUsage(hoursByType map[string]float64, needsDollars bool, namespace string, rates GPURates) (totalHours, totalDollars float64, usage []gpubudgetv1alpha1.GPUTypeUsage, err error) {
 	usage = make([]gpubudgetv1alpha1.GPUTypeUsage, 0, len(hoursByType))
 	for gpuType, hours := range hoursByType {
 		totalHours += hours
 		usage = append(usage, gpubudgetv1alpha1.GPUTypeUsage{GPUType: gpuType, GPUHours: hours})
 		if needsDollars {
-			rate, ok := r.GPURates.RateFor(gpuType)
+			rate, ok := rates.RateFor(gpuType)
 			if !ok {
-				return 0, 0, nil, fmt.Errorf("namespace %s used unpriced GPU type %q: set the operator's --gpu-rate=<family>=<usd> flag for its GPU family", namespace, gpuType)
+				return 0, 0, nil, fmt.Errorf("namespace %s used unpriced GPU type %q: add it to GpuBudgetOperatorConfig %q's spec.gpuRates", namespace, gpuType, gpubudgetv1alpha1.SingletonConfigName)
 			}
 			totalDollars += hours * rate
 		}
@@ -282,21 +283,26 @@ func (r *GpuBudgetReconciler) enforcer() *enforce.Enforcer {
 	return r.Enforcer
 }
 
-func (r *GpuBudgetReconciler) prometheusClient() (*metrics.Client, error) {
-	if r.PrometheusURL == "" {
-		return nil, fmt.Errorf("no prometheus URL configured: set the operator's --prometheus-url flag")
+// prometheusClient returns a cached client for url, rebuilding it if url has
+// changed since the last call - GpuBudgetOperatorConfig.spec.prometheusURL
+// can be edited at any time, unlike the --prometheus-url flag it replaced,
+// which was only ever read once at process startup.
+func (r *GpuBudgetReconciler) prometheusClient(url string) (*metrics.Client, error) {
+	if url == "" {
+		return nil, fmt.Errorf("GpuBudgetOperatorConfig %q has no spec.prometheusURL set", gpubudgetv1alpha1.SingletonConfigName)
 	}
 
 	r.promClientMu.Lock()
 	defer r.promClientMu.Unlock()
-	if r.promClient != nil {
+	if r.promClient != nil && r.promClientURL == url {
 		return r.promClient, nil
 	}
-	c, err := metrics.NewClient(metrics.Config{Address: r.PrometheusURL})
+	c, err := metrics.NewClient(metrics.Config{Address: url})
 	if err != nil {
 		return nil, err
 	}
 	r.promClient = c
+	r.promClientURL = url
 	return c, nil
 }
 
@@ -324,9 +330,33 @@ func durationOrDefault(d, fallback time.Duration) time.Duration {
 	return d
 }
 
-// SetupWithManager wires the reconciler into the manager.
+// SetupWithManager wires the reconciler into the manager. Also watches
+// GpuBudgetOperatorConfig so that editing the singleton config (a new
+// PrometheusURL, an added/changed GPU rate) re-reconciles every GpuBudget
+// promptly, rather than waiting up to each one's own spec.checkInterval to
+// notice - since one shared config affects all of them at once.
 func (r *GpuBudgetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gpubudgetv1alpha1.GpuBudget{}).
+		Watches(
+			&gpubudgetv1alpha1.GpuBudgetOperatorConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueAllGpuBudgets),
+		).
 		Complete(r)
+}
+
+// enqueueAllGpuBudgets requeues every GpuBudget in the cluster - used only
+// as a reaction to a GpuBudgetOperatorConfig change, which is cluster-wide
+// by definition (see SetupWithManager).
+func (r *GpuBudgetReconciler) enqueueAllGpuBudgets(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list gpubudgetv1alpha1.GpuBudgetList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "listing GpuBudgets to requeue after GpuBudgetOperatorConfig change")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for _, gb := range list.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&gb)})
+	}
+	return requests
 }

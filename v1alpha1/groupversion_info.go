@@ -15,4 +15,5 @@ var (
 
 func init() {
 	SchemeBuilder.Register(&GpuBudget{}, &GpuBudgetList{})
+	SchemeBuilder.Register(&GpuBudgetOperatorConfig{}, &GpuBudgetOperatorConfigList{})
 }

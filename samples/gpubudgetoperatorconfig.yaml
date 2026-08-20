@@ -1,0 +1,30 @@
+# Cluster-scoped and a singleton - the operator only ever reconciles the
+# object named "cluster" (see v1alpha1.SingletonConfigName), ignoring any
+# GpuBudgetOperatorConfig created under another name. Apply exactly one of
+# these per cluster, after `make deploy`/`make bootstrap` (or the
+# equivalent OLM install) and before creating any GpuBudget - every
+# GpuBudget reconcile fails with phase Unknown, reason OperatorConfigMissing,
+# until this exists.
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudgetOperatorConfig
+metadata:
+  name: cluster
+spec:
+  # The single, cluster-wide Prometheus/Thanos endpoint every GpuBudget is
+  # evaluated against - there is no per-namespace override. This default
+  # targets OpenShift's built-in monitoring stack, which requires the
+  # cluster-monitoring-view ClusterRoleBinding
+  # (manager/bootstrap/monitoring_rolebinding.yaml).
+  prometheusURL: https://thanos-querier.openshift-monitoring.svc:9091
+  # $/GPU-hour rates, only required if any GpuBudget sets spec.dollarsLimit
+  # and actually uses that GPU family - REPLACE these placeholder values
+  # with your real rates before relying on dollarsLimit enforcement. Add
+  # another entry for any GPU family not listed here (e.g. B200) - no code
+  # change or rebuild required, and it takes effect on the next reconcile.
+  gpuRates:
+  - family: A100
+    dollarsPerGPUHour: 1.70
+  - family: H100
+    dollarsPerGPUHour: 1.10
+  - family: V100
+    dollarsPerGPUHour: 0.30

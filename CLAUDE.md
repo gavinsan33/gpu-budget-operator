@@ -29,30 +29,35 @@ Reconcile pipeline per pass:
    re-enforces below rather than leaving the namespace uncapped).
 2. Compute `periodStart(spec.period, now)` (`controllers/period.go`) -
    calendar-aligned in UTC, never a rolling window.
-3. Query the single, cluster-wide Prometheus set via `--prometheus-url` -
-   there is no per-namespace override of *which* Prometheus is queried
-   (only the PromQL run against it is overridable, via `spec.query`). One
-   Prometheus for the whole cluster keeps budgets comparable across
-   namespaces.
-4. Run a PromQL query (`spec.query` override, or
+3. Fetch the singleton `GpuBudgetOperatorConfig` (named
+   `gpubudgetv1alpha1.SingletonConfigName`, i.e. `"cluster"`) - if it
+   doesn't exist yet, the reconcile fails with `status.phase: Unknown`,
+   reason `OperatorConfigMissing`, before ever touching Prometheus. See
+   "GpuBudgetOperatorConfig" below.
+4. Query the single, cluster-wide Prometheus set via that config's
+   `spec.prometheusURL` - there is no per-namespace override of *which*
+   Prometheus is queried (only the PromQL run against it is overridable,
+   via `spec.query`). One Prometheus for the whole cluster keeps budgets
+   comparable across namespaces.
+5. Run a PromQL query (`spec.query` override, or
    `metrics.DefaultGPUHoursQueryTemplate`) for cumulative GPU-hours consumed
    since `periodStart`, broken out by GPU type (`gpuType` label per sample).
-5. If `spec.dollarsLimit` is set, price each type via `GPURates.RateFor` -
-   an unpriced type present in usage fails the whole reconcile with
-   `status.phase: Unknown` rather than silently undercounting cost
-   (`computeUsage` in the controller).
-6. Compare `gpuHoursUsed`/`dollarsUsed` against `spec.gpuHoursLimit`/
+6. If `spec.dollarsLimit` is set, price each type via `GPURates.RateFor`
+   using the config's `spec.gpuRates` - an unpriced type present in usage
+   fails the whole reconcile with `status.phase: Unknown` rather than
+   silently undercounting cost (`computeUsage` in the controller).
+7. Compare `gpuHoursUsed`/`dollarsUsed` against `spec.gpuHoursLimit`/
    `spec.dollarsLimit` - **whichever limit is exceeded first** triggers
    enforcement, no grace period (unlike the old instantaneous-threshold
    design this replaced, a monotonically-increasing cumulative counter
    can't "spike" and settle back down on its own, so there's no burst to
    absorb).
-7. If over budget, **or already `Enforced`**, call `EnforceNamespace` again
+8. If over budget, **or already `Enforced`**, call `EnforceNamespace` again
    this pass (catching newly created GPU workloads too) and stay/become
    `Enforced`. Otherwise `Compliant`. There is no code path that transitions
    `Enforced` -> `Compliant` on its own - only `handleManualReset` (step 1)
    does that.
-8. Requeue after `spec.checkInterval` (default `15m`, matching typical GPU-cluster billing granularity) - no per-branch
+9. Requeue after `spec.checkInterval` (default `15m`, matching typical GPU-cluster billing granularity) - no per-branch
    `RequeueAfter` tuning is needed anymore, since there's no grace/cooldown
    timer to wake up early for.
 
@@ -74,6 +79,57 @@ choice (confirmed with the user), not an oversight:
   after raising a limit - if usage is still over budget post-restore, the
   reconciler re-enforces in the same pass (see pipeline step 1 above),
   rather than requiring a second manual step.
+
+### GpuBudgetOperatorConfig (`v1alpha1/gpubudgetoperatorconfig_types.go`)
+
+`spec.prometheusURL` and `spec.gpuRates` used to be `--prometheus-url`/
+`--gpu-rate=<family>=<usd>` flags, read once into `GpuBudgetReconciler`
+fields at `main.go` startup. They're a `GpuBudgetOperatorConfig` CR instead
+now, fetched fresh via `r.Get` at the top of every `Reconcile` call (right
+after the reset-annotation check, before anything Prometheus-related) -
+this was a deliberate architecture change, not a refactor for its own sake:
+
+- **Why**: this operator is meant to be installable via OLM (see the OLM
+  bundle sections below), and OLM's install wizard has no mechanism for
+  prompting for custom config at install time - the only way to change a
+  value baked into the CSV's Deployment spec (like a flag) is to edit the
+  CSV itself and rebuild/repush the bundle and catalog images. A plain CRD,
+  by contrast, gets a real auto-generated form in the OpenShift console
+  (from `specDescriptors` - see the CSV) and can be created/edited by any
+  cluster-admin with no image rebuild at all, matching how "day 2 config"
+  is conventionally handled by operators that need cluster-specific
+  settings after install (see `GpuBudget`'s own `specDescriptors` for the
+  same pattern, already in place before this CRD existed).
+- **Singleton, not namespaced**: named `gpubudgetv1alpha1.SingletonConfigName`
+  (`"cluster"`) by convention - mirroring OpenShift's own
+  `config.openshift.io` singletons (`Infrastructure`, `Network`, etc.). The
+  reconciler always looks up that exact name; there's no mechanism to pick
+  among several `GpuBudgetOperatorConfig` objects, since these are
+  cluster-wide settings (matching `GpuBudget`'s own "one Prometheus for the
+  whole cluster" design), not something more than one could reasonably
+  exist for. `+kubebuilder:resource:scope=Cluster` enforces this can't be
+  namespaced at all, even if scope alone can't enforce the name.
+- **Missing config fails loudly, not silently**: if `r.Get` returns
+  not-found, `Reconcile` returns `markFailed(..., "OperatorConfigMissing",
+  ...)` before ever calling `prometheusClient` - a `GpuBudget` created
+  before any `GpuBudgetOperatorConfig` exists reports `status.phase:
+  Unknown` with a message telling the user exactly what to create, rather
+  than some deeper Prometheus-dial error implying a network/auth problem.
+- **Live reconfiguration, not just install-time**: `prometheusClient`
+  caches by URL (`promClientURL` alongside `promClient`) and rebuilds only
+  when the fetched URL differs from the cached one - unlike the old
+  build-once-at-startup client, `spec.prometheusURL` can change at any
+  time. `SetupWithManager` also `Watches` `GpuBudgetOperatorConfig` and
+  enqueues every existing `GpuBudget` on any change
+  (`enqueueAllGpuBudgets`), so an edited Prometheus URL or a newly added
+  GPU rate takes effect on the next reconcile rather than waiting up to
+  each `GpuBudget`'s own `spec.checkInterval` to notice.
+- **RBAC**: cluster-scoped `get;list;watch` only (no `create`/`update`/
+  `delete` - the operator only ever reads this, a human manages it),
+  granted the same way as every other permission this operator needs: a
+  `ClusterRole`/`ClusterRoleBinding` bound to its ServiceAccount cluster-wide
+  (`manager/bootstrap/role.yaml`), since the reconciler already runs with
+  cluster-wide `GpuBudget` watch/enforce permissions regardless.
 
 ### Authenticating to Prometheus (`metrics/prometheus.go`)
 
@@ -368,18 +424,20 @@ present on any Kubernetes cluster.
 ## Code Structure
 
 - `v1alpha1/` — `GpuBudget` CRD Go types (period/budget spec, cumulative-usage
-  status, `ResetAnnotation` constant), groupversion registration, generated
-  deepcopy.
+  status, `ResetAnnotation` constant) and `GpuBudgetOperatorConfig` CRD Go
+  types (`SingletonConfigName` constant), groupversion registration,
+  generated deepcopy.
 - `controllers/gpubudget-controller.go` — the reconcile pipeline: query usage,
   price it, compare to budget, enforce/hold/restore.
 - `controllers/period.go` — `periodStart`: calendar-aligned (UTC) period
   boundary calculation for Daily/Weekly/Monthly.
 - `controllers/rates.go` — `GPURates`: a `map[string]float64` from GPU
-  family (e.g. `"A100"`) to its `$/GPU-hour` rate, set once via one or more
-  repeatable `--gpu-rate=<family>=<usd>` flags (`main.go`'s `gpuRatesFlag`
-  implements `flag.Value` to accumulate them). Adding a rate for a new GPU
-  family, or changing an existing one, is purely a deployment manifest
-  change - never a code change or rebuild. `RateFor` matches by family
+  family (e.g. `"A100"`) to its `$/GPU-hour` rate, built fresh each
+  reconcile via `ratesFromSpec` from the singleton `GpuBudgetOperatorConfig`'s
+  `spec.gpuRates` (see the `GpuBudgetOperatorConfig` architecture section
+  above for why this moved off command-line flags). Adding a rate for a new
+  GPU family, or changing an existing one, is purely a CR edit - never a
+  code change or rebuild. `RateFor` matches by family
   *prefix* (longest match wins), not exact equality: the default query's
   `gpuType` is typically a full SKU like `"A100-SXM4-80GB"` (from a node's
   product label), not the bare family name a rate is configured under - an
@@ -407,8 +465,8 @@ present on any Kubernetes cluster.
     ImageStreamTag via the internal registry service DNS
     `image-registry.openshift-image-registry.svc:5000/...`). Applied
     repeatedly via `make deploy`.
-- `config/crd/` — generated CRD manifest only.
-- `samples/` — example `GpuBudget` CRs.
+- `config/crd/` — generated CRD manifests only.
+- `samples/` — example `GpuBudget` and `GpuBudgetOperatorConfig` CRs.
 
 ## Known gaps (not yet implemented)
 

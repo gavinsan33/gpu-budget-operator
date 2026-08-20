@@ -12,6 +12,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -65,6 +66,58 @@ func newScheme(t *testing.T) *runtime.Scheme {
 		t.Fatal(err)
 	}
 	return scheme
+}
+
+// operatorConfig builds the singleton GpuBudgetOperatorConfig every test
+// must seed into the fake client - Reconcile fails with OperatorConfigMissing
+// without one. rates may be nil.
+func operatorConfig(prometheusURL string, rates GPURates) *gpubudgetv1alpha1.GpuBudgetOperatorConfig {
+	entries := make([]gpubudgetv1alpha1.GPURate, 0, len(rates))
+	for family, rate := range rates {
+		entries = append(entries, gpubudgetv1alpha1.GPURate{Family: family, DollarsPerGPUHour: rate})
+	}
+	return &gpubudgetv1alpha1.GpuBudgetOperatorConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: gpubudgetv1alpha1.SingletonConfigName},
+		Spec: gpubudgetv1alpha1.GpuBudgetOperatorConfigSpec{
+			PrometheusURL: prometheusURL,
+			GPURates:      entries,
+		},
+	}
+}
+
+// updateOperatorConfig overwrites the singleton GpuBudgetOperatorConfig's
+// spec on c, simulating a live edit between two Reconcile calls (the
+// operator picks this up on the very next reconcile - no restart, unlike
+// the --prometheus-url/--gpu-rate flags this CRD replaced).
+func updateOperatorConfig(t *testing.T, c client.Client, prometheusURL string, rates GPURates) {
+	t.Helper()
+	var cfg gpubudgetv1alpha1.GpuBudgetOperatorConfig
+	if err := c.Get(context.Background(), client.ObjectKey{Name: gpubudgetv1alpha1.SingletonConfigName}, &cfg); err != nil {
+		t.Fatalf("fetching GpuBudgetOperatorConfig: %v", err)
+	}
+	if prometheusURL != "" {
+		cfg.Spec.PrometheusURL = prometheusURL
+	}
+	if rates != nil {
+		entries := make([]gpubudgetv1alpha1.GPURate, 0, len(rates))
+		for family, rate := range rates {
+			entries = append(entries, gpubudgetv1alpha1.GPURate{Family: family, DollarsPerGPUHour: rate})
+		}
+		cfg.Spec.GPURates = entries
+	}
+	if err := c.Update(context.Background(), &cfg); err != nil {
+		t.Fatalf("updating GpuBudgetOperatorConfig: %v", err)
+	}
+}
+
+// mustCreateConfig seeds the singleton GpuBudgetOperatorConfig into c after
+// the fake client is already built - simpler than threading it through
+// every WithObjects(...) call above.
+func mustCreateConfig(t *testing.T, c client.Client, prometheusURL string, rates GPURates) {
+	t.Helper()
+	if err := c.Create(context.Background(), operatorConfig(prometheusURL, rates)); err != nil {
+		t.Fatalf("seeding GpuBudgetOperatorConfig: %v", err)
+	}
 }
 
 func gpuDeployment(namespace, name string, replicas int32) *appsv1.Deployment {
@@ -224,7 +277,8 @@ func TestReconcile_UnderBudgetDoesNotEnforce(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)})
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -256,6 +310,39 @@ func TestReconcile_UnderBudgetDoesNotEnforce(t *testing.T) {
 	}
 }
 
+// TestReconcile_MissingOperatorConfigFailsWithClearReason covers a GpuBudget
+// created before any GpuBudgetOperatorConfig exists cluster-wide - it must
+// fail loudly with a reason naming the missing object, never attempting a
+// Prometheus query with an empty URL.
+func TestReconcile_MissingOperatorConfigFailsWithClearReason(t *testing.T) {
+	scheme := newScheme(t)
+	gb := &gpubudgetv1alpha1.GpuBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "budget", Namespace: "gavin-test"},
+		Spec: gpubudgetv1alpha1.GpuBudgetSpec{
+			Period:        gpubudgetv1alpha1.PeriodMonthly,
+			GPUHoursLimit: float64Ptr(10),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
+
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got gpubudgetv1alpha1.GpuBudget
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(gb), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != gpubudgetv1alpha1.PhaseUnknown {
+		t.Fatalf("expected Unknown phase without a GpuBudgetOperatorConfig, got %s", got.Status.Phase)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, readyCondition)
+	if cond == nil || cond.Reason != "OperatorConfigMissing" {
+		t.Fatalf("expected Ready condition with reason OperatorConfigMissing, got %+v", cond)
+	}
+}
+
 func TestReconcile_OverGPUHoursLimitEnforcesImmediately(t *testing.T) {
 	prom := promStub(t, map[string]float64{"A100": 50})
 	defer prom.Close()
@@ -271,7 +358,8 @@ func TestReconcile_OverGPUHoursLimitEnforcesImmediately(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -314,7 +402,8 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	mustCreateConfig(t, c, prom.URL, GPURates{"A100": 30})
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -336,7 +425,7 @@ func TestReconcile_DollarsLimitExceededEvenWhenGPUHoursLimitIsNot(t *testing.T) 
 // gpuType comes from a node's full product label via label_replace(...,
 // "NVIDIA-(.+)"), so a real cluster reports gpuType as a full SKU like
 // "A100-SXM4-80GB", not the bare family name "A100" every unit test above
-// uses. --gpu-rate=A100=<usd> must still price it (RateFor matches by family
+// uses. A GpuBudgetOperatorConfig rate for "A100" must still price it (RateFor matches by family
 // prefix, not exact equality) - this is the one test in the suite using a
 // full-SKU gpuType end-to-end through Reconcile, not just RateFor directly.
 func TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName(t *testing.T) {
@@ -353,7 +442,8 @@ func TestReconcile_PricesFullSKUGpuTypeNotJustBareFamilyName(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	mustCreateConfig(t, c, prom.URL, GPURates{"A100": 30})
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -385,7 +475,8 @@ func TestReconcile_UnpricedGPUTypeWithDollarsLimitFailsLoudly(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
 	// GPURates zero-value: H100 has no configured rate.
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -421,7 +512,8 @@ func TestReconcile_UnpricedGPUTypeTakesNoEnforcementAction(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -465,7 +557,8 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gb).WithStatusSubresource(gb).Build()
 
 	// First reconcile: no rate configured yet.
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -477,9 +570,10 @@ func TestReconcile_UnpricedGPUTypeAfterFixResolvesToCompliant(t *testing.T) {
 		t.Fatalf("expected Unknown phase before the rate is configured, got %s", unknown.Status.Phase)
 	}
 
-	// Rate now configured (e.g. the operator restarted with --gpu-rate=H100=<usd>
-	// set) and usage is comfortably under the $1000 limit.
-	r.GPURates = GPURates{"H100": 1.10}
+	// Rate now configured (e.g. someone added an H100 entry to
+	// GpuBudgetOperatorConfig's spec.gpuRates) and usage is comfortably
+	// under the $1000 limit.
+	updateOperatorConfig(t, c, "", GPURates{"H100": 1.10})
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after rate configured: %v", err)
 	}
@@ -522,7 +616,8 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 
 	// First reconcile: over the GPU-hours limit, A100 is priced - enforces
 	// normally.
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL, GPURates: GPURates{"A100": 30}}
+	mustCreateConfig(t, c, prom.URL, GPURates{"A100": 30})
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -539,8 +634,7 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 	prom.Close()
 	mixedProm := promStub(t, map[string]float64{"A100": 50, "H100": 5})
 	defer mixedProm.Close()
-	r.PrometheusURL = mixedProm.URL
-	r.promClient = nil
+	updateOperatorConfig(t, c, mixedProm.URL, nil)
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile with unpriced H100 usage: %v", err)
@@ -564,14 +658,12 @@ func TestReconcile_UnpricedGPUTypeWhileEnforcedStaysStickyUntilReset(t *testing.
 		t.Fatalf("expected deployment to remain at 0 replicas during the transient Unknown phase, got %d", *gotDepStillZero.Spec.Replicas)
 	}
 
-	// H100 gets priced (e.g. --gpu-rate=H100=1.10 configured), and -
+	// H100 gets priced (an H100 entry added to GpuBudgetOperatorConfig), and -
 	// critically - usage this time reads as comfortably under both limits.
 	mixedProm.Close()
 	lowUsageProm := promStub(t, map[string]float64{"A100": 0.1})
 	defer lowUsageProm.Close()
-	r.PrometheusURL = lowUsageProm.URL
-	r.promClient = nil
-	r.GPURates["H100"] = 1.10
+	updateOperatorConfig(t, c, lowUsageProm.URL, GPURates{"A100": 30, "H100": 1.10})
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after H100 priced and usage drops: %v", err)
@@ -612,7 +704,8 @@ func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -644,8 +737,7 @@ func TestReconcile_EnforcementIsNeverAutomaticallyLifted(t *testing.T) {
 	prom.Close()
 	lowUsageProm := promStub(t, map[string]float64{"A100": 0.1})
 	defer lowUsageProm.Close()
-	r.PrometheusURL = lowUsageProm.URL
-	r.promClient = nil // force a new client for the new address
+	updateOperatorConfig(t, c, lowUsageProm.URL, nil)
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile after usage drop: %v", err)
@@ -682,7 +774,8 @@ func TestReconcile_ResetAnnotationRestoresAndClearsEnforcement(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -756,7 +849,8 @@ func TestReconcile_ResetAnnotationRestoresFullyWhenBackUnderBudget(t *testing.T)
 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -797,7 +891,8 @@ func TestReconcile_DeletesBareGPUPodButLeavesOwnedPodAlone(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(barePod, ownedPod, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -841,7 +936,8 @@ func TestReconcile_ScalesStandaloneReplicaSetButLeavesDeploymentOwnedOneAlone(t 
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneRS, ownedRS, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -881,7 +977,8 @@ func TestReconcile_ScalesStatefulSetToZero(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -914,7 +1011,8 @@ func TestReconcile_SuspendsStandaloneJobButLeavesOwnedJobAlone(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(standaloneJob, ownedJob, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -952,7 +1050,8 @@ func TestReconcile_NonGPUDeploymentIsNeverTouched(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -999,7 +1098,8 @@ func TestReconcile_PartialEnforcementFailurePersistsSuccessfulEntries(t *testing
 		},
 	})
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err == nil {
 		t.Fatal("expected Reconcile to return the StatefulSet enforcement error, got nil")
 	}
@@ -1068,7 +1168,8 @@ func TestReconcile_StatusConflictIsRetriedNotDropped(t *testing.T) {
 		},
 	})
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v (persistStatus should have retried the single injected conflict)", err)
 	}
@@ -1111,7 +1212,8 @@ func TestReconcile_ReapplyingHigherLimitAloneDoesNotLiftEnforcement(t *testing.T
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -1177,7 +1279,8 @@ func TestReconcile_ReapplyRaisingLimitThenResetFullyRestores(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, gb).WithStatusSubresource(gb).Build()
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -1290,7 +1393,8 @@ func TestReconcile_ResetSurvivesConflictClearingTheAnnotation(t *testing.T) {
 		},
 	})
 
-	r := &GpuBudgetReconciler{Client: c, Scheme: scheme, PrometheusURL: prom.URL}
+	mustCreateConfig(t, c, prom.URL, nil)
+	r := &GpuBudgetReconciler{Client: c, Scheme: scheme}
 
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gb)}); err == nil {
 		t.Fatal("expected the first reconcile to surface the injected conflict clearing the reset annotation")

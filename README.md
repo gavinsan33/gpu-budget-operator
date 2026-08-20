@@ -31,7 +31,7 @@ independently against the same namespace's workloads.
 |---|---|---|---|
 | `period` | string (`Daily`/`Weekly`/`Monthly`) | *(required)* | The calendar-aligned billing cycle the budget resets on. `Daily` starts at 00:00 UTC; `Weekly` starts Monday 00:00 UTC; `Monthly` starts on the 1st at 00:00 UTC. These are fixed calendar boundaries, **not** rolling windows — `Monthly` always resets on the 1st, never "30 days before now." |
 | `gpuHoursLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative GPU-hours, summed across all GPU types, allowed within the current period. |
-| `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the operator's `--gpu-rate=<family>=<usd>` flags. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
+| `dollarsLimit` | float | *(one of `gpuHoursLimit`/`dollarsLimit` required)* | Max cumulative cost in USD allowed within the current period, computed from GPU-hours-by-type and the cluster-wide `GpuBudgetOperatorConfig`'s `spec.gpuRates`. If both `gpuHoursLimit` and `dollarsLimit` are set, **whichever is exceeded first triggers enforcement.** |
 | `query` | string | reservation-based default (see below) | Overrides the PromQL used to compute cumulative GPU-hours consumed since the period started, broken out by GPU type. Must return one sample per GPU type, each labeled `gpuType` with a value matching a rate key (`a100`/`h100`/`v100`, case-insensitive). `__NAMESPACE__`, `__RANGE__`, and `__RANGE_HOURS__` are substituted with the namespace, a PromQL range duration, and that same range as a plain hour count, respectively. Override this to switch accounting methodologies (e.g. DCGM utilization-based instead of reservation-based) without any code or CRD change — see `samples/team-b-budget-custom-query.yaml`. |
 | `checkInterval` | duration | `15m` | How often cumulative usage is re-evaluated. Defaults to 15m to match typical GPU-cluster billing granularity - checking more often than billing itself updates doesn't surface anything new. |
 
@@ -43,7 +43,7 @@ independently against the same namespace's workloads.
 | `gpuHoursUsed` | Cumulative GPU-hours consumed so far in the current period, summed across all GPU types. |
 | `gpuHoursByType` | `gpuHoursUsed` broken down per GPU type. |
 | `dollarsUsed` | Cumulative cost in USD so far in the current period. |
-| `phase` | One of `Compliant`, `Enforced`, or `Unknown` (set when a Prometheus query fails, or when `dollarsLimit` is set but usage includes a GPU type with no configured rate). |
+| `phase` | One of `Compliant`, `Enforced`, or `Unknown` (set when the cluster-wide `GpuBudgetOperatorConfig` doesn't exist yet, a Prometheus query fails, or `dollarsLimit` is set but usage includes a GPU type with no configured rate). |
 | `lastCheckedTime` | When usage was last queried from Prometheus. |
 | `lastEnforcementTime` | When enforcement most recently acted against this namespace. |
 | `enforcedResources` | List of workloads currently scaled down/suspended by the operator (kind, name, action taken, timestamp), used to drive a manual restore. |
@@ -99,6 +99,35 @@ itself. If usage is still over budget, it re-enforces on the very same
 reconcile — resetting doesn't override the budget, it just gives you a
 clean slate to try again (e.g. after raising the limit).
 
+## The `GpuBudgetOperatorConfig` CRD
+
+`GpuBudgetOperatorConfig` is a **cluster-scoped singleton** (group
+`gpubudget.io`, version `v1alpha1`, short name `gboc`) holding the two
+settings every `GpuBudget` in the cluster shares: the Prometheus endpoint
+and the `$/GPU-hour` rate table. The operator only ever reconciles the
+object **named `cluster`** — create exactly one, cluster-wide, before
+creating any `GpuBudget`:
+
+```yaml
+apiVersion: gpubudget.io/v1alpha1
+kind: GpuBudgetOperatorConfig
+metadata:
+  name: cluster
+spec:
+  prometheusURL: https://thanos-querier.openshift-monitoring.svc:9091
+  gpuRates:
+  - family: A100
+    dollarsPerGPUHour: 1.70
+  - family: H100
+    dollarsPerGPUHour: 1.10
+```
+
+Every `GpuBudget` reconcile reads this object fresh — editing
+`spec.prometheusURL` or adding/changing a `spec.gpuRates` entry takes
+effect on the very next reconcile, with no operator restart. Until this
+object exists, every `GpuBudget` reports `status.phase: Unknown` with
+reason `OperatorConfigMissing`. See `samples/gpubudgetoperatorconfig.yaml`.
+
 ## Requirements
 
 - Go 1.26+
@@ -122,10 +151,10 @@ clean slate to try again (e.g. after raising the limit).
 - If targeting OpenShift's built-in monitoring (the `manager/deploy`
   default): see "Prometheus authentication" below for the RBAC/token/TLS
   pieces required.
-- If any `GpuBudget` sets `spec.dollarsLimit`: real `$/GPU-hour` rates set via
-  the operator's `--gpu-rate=<family>=<usd>` flags (one per GPU family, e.g.
-  `--gpu-rate=A100=1.70`) for every GPU family namespaces actually use — see
-  "Install" below.
+- If any `GpuBudget` sets `spec.dollarsLimit`: real `$/GPU-hour` rates set in
+  the cluster-wide `GpuBudgetOperatorConfig`'s `spec.gpuRates` (one entry per
+  GPU family, e.g. `{family: A100, dollarsPerGPUHour: 1.70}`) for every GPU
+  family namespaces actually use — see "Install" below.
 - Optional: [JobSet](https://github.com/kubernetes-sigs/jobset) and
   [KServe](https://github.com/kserve/kserve) CRDs installed, if you want
   those workload types enforced (Deployment/StatefulSet/ReplicaSet/Job/Pod
@@ -195,8 +224,9 @@ details.
 ## Prometheus authentication
 
 Every `GpuBudget` in the cluster is evaluated against one single,
-cluster-wide Prometheus, set once via `--prometheus-url` - there's no
-per-namespace override. The default `manager/` manifests target OpenShift's
+cluster-wide Prometheus, set via the singleton `GpuBudgetOperatorConfig`'s
+`spec.prometheusURL` - there's no per-namespace override. The default
+`manager/` manifests target OpenShift's
 built-in monitoring stack (Thanos Querier over HTTPS), which requires both a
 Bearer token and a trusted TLS certificate - the operator does not get this
 "for free" just by running in-cluster. Three pieces make it work together:
@@ -222,8 +252,8 @@ Bearer token and a trusted TLS certificate - the operator does not get this
    self-signed dev Prometheus, do it outside the operator (e.g. terminate
    TLS at a local proxy instead).
 
-Not on OpenShift, or using a different Prometheus? Edit `--prometheus-url`
-in `manager/deploy/deployment.yaml` to your endpoint, and drop or adjust
+Not on OpenShift, or using a different Prometheus? Edit `spec.prometheusURL`
+on the `GpuBudgetOperatorConfig` to your endpoint, and drop or adjust
 `manager/bootstrap/monitoring_rolebinding.yaml`/
 `manager/deploy/service-ca-configmap.yaml` to match how that Prometheus
 authenticates (or doesn't). If it isn't behind OpenShift's service-ca and
@@ -233,32 +263,31 @@ an unauthenticated request both happen automatically.
 
 ## Install
 
-1. Point the operator at your (single, cluster-wide) Prometheus by editing
-   `manager/deploy/deployment.yaml`'s `--prometheus-url` flag — see
-   "Prometheus authentication" above for what else needs to match.
-2. If any namespace will use `spec.dollarsLimit`, replace the placeholder
-   `--gpu-rate=A100=1.70`/`--gpu-rate=H100=1.10`/`--gpu-rate=V100=0.30`
-   flags in `manager/deploy/deployment.yaml` with your real `$/GPU-hour`
-   rates — add another `--gpu-rate=<family>=<usd>` flag for any GPU family
-   not already listed, no code change or rebuild required. Rates are
-   matched against `gpuType` by family prefix (e.g. `A100` matches a
-   `gpuType` of `A100-SXM4-80GB`), and an unset family is treated as "not
-   configured," not "free" — a namespace using an unpriced GPU family with
-   `dollarsLimit` set will report `status.phase: Unknown` rather than
-   silently undercounting cost.
-3. `make manifests` — regenerate the CRD from the Go types.
-4. `make test` — run unit tests.
-5. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuBudget`
-   CRD plus the Namespace and cluster-scoped RBAC
-   (`manager/bootstrap/`). Only needs re-running if the CRD or that RBAC
-   changes.
-6. `make deploy` — **routine, no cluster-admin needed**: applies the
+1. `make manifests` — regenerate the CRDs from the Go types.
+2. `make test` — run unit tests.
+3. `make bootstrap` — **cluster-admin, one-time**: installs the `GpuBudget`/
+   `GpuBudgetOperatorConfig` CRDs plus the Namespace and cluster-scoped RBAC
+   (`manager/bootstrap/`). Only needs re-running if the CRDs or that RBAC
+   change.
+4. `make deploy` — **routine, no cluster-admin needed**: applies the
    namespace-scoped resources in `manager/deploy/` (ServiceAccount,
    ConfigMap, BuildConfig/ImageStream, Deployment), builds the operator
    image in-cluster from git source, and rolls out the result. Safe to run
    repeatedly — see `make build-image` if you just want to rebuild without a
    full redeploy.
-7. Apply a `GpuBudget` in any namespace you want monitored, e.g.
+5. Apply a `GpuBudgetOperatorConfig` named `cluster` pointing
+   `spec.prometheusURL` at your (single, cluster-wide) Prometheus — see
+   "Prometheus authentication" above for what else needs to match. If any
+   namespace will use `spec.dollarsLimit`, also set real `$/GPU-hour` rates
+   in `spec.gpuRates` — start from `samples/gpubudgetoperatorconfig.yaml`
+   and edit the placeholder values, then `oc apply -f`. Rates are matched
+   against `gpuType` by family prefix (e.g. `A100` matches a `gpuType` of
+   `A100-SXM4-80GB`), and an unset family is treated as "not configured,"
+   not "free" — a namespace using an unpriced GPU family with
+   `dollarsLimit` set will report `status.phase: Unknown` rather than
+   silently undercounting cost. Every `GpuBudget` reports `status.phase:
+   Unknown` (reason `OperatorConfigMissing`) until this object exists.
+6. Apply a `GpuBudget` in any namespace you want monitored, e.g.
    `oc apply -f samples/gavin-test-budget.yaml`.
 
 ## Uninstall
