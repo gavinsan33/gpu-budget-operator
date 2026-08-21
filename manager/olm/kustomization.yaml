@@ -4,9 +4,10 @@ kind: Kustomization
 # OLM-path install objects only - the CSV/CRD/ClusterRole/Deployment
 # themselves come from the InstallPlan OLM generates from the bundle, not
 # from anything in this repo's manager/ directories. Requires
-# manager/bootstrap/namespace.yaml, manager/deploy/service-ca-configmap.yaml,
-# and manager/bootstrap/monitoring_rolebinding.yaml to already be applied -
-# see the Makefile's `catalog-deploy` target and README's "Install via OLM".
+# manager/bootstrap/namespace.yaml to already exist (see the Makefile's
+# `catalog-deploy` target and README's "Install via OLM") - the operator
+# itself self-provisions the service-ca ConfigMap and the
+# cluster-monitoring-view ClusterRoleBinding once it's running.
 resources:
 - catalogsource.yaml
 - operatorgroup.yaml

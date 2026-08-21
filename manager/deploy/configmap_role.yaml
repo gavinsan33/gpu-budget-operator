@@ -1,0 +1,34 @@
+# Namespace-scoped (Role, not ClusterRole) - controllers.EnsurePrerequisites
+# only ever creates the service-ca ConfigMap in the operator's OWN
+# namespace, never cluster-wide, so binding this cluster-wide via
+# manager/bootstrap/role.yaml's ClusterRole would grant create-any-ConfigMap
+# in every namespace on the cluster - broader than what's actually used.
+# Applied via `make deploy` (routine, no cluster-admin needed), not
+# `make bootstrap`, since a namespace admin/edit role can create Roles
+# scoped to their own namespace without elevated cluster-wide RBAC.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-budget-operator-configmap-role
+  namespace: gpu-budget-operator-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-budget-operator-configmap-rolebinding
+  namespace: gpu-budget-operator-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-budget-operator-configmap-role
+subjects:
+- kind: ServiceAccount
+  name: gpu-budget-operator-controller-manager
+  namespace: gpu-budget-operator-system

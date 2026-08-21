@@ -35,6 +35,16 @@ spec:
         # "cluster") the operator watches at runtime. Apply
         # samples/gpubudgetoperatorconfig.yaml (edited for your cluster's
         # Prometheus/rates) after deploying - see README's "Install".
+        env:
+        # Downward API, not a hardcoded namespace: lets the operator
+        # self-provision the service-ca ConfigMap and the
+        # cluster-monitoring-view ClusterRoleBinding (see
+        # controllers.EnsurePrerequisites) in its own namespace regardless
+        # of which one it's actually deployed into.
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         volumeMounts:
         - name: service-ca
           mountPath: /etc/gpu-budget-operator/service-ca
@@ -56,5 +66,10 @@ spec:
       - name: service-ca
         configMap:
           name: gpu-budget-operator-service-ca
+          # The operator creates this ConfigMap itself on first startup
+          # (controllers.EnsurePrerequisites) rather than requiring it to
+          # already exist - optional: true lets the pod start cleanly
+          # before that happens instead of hanging in ContainerCreating.
+          optional: true
       securityContext:
         runAsNonRoot: true

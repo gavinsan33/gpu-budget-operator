@@ -84,7 +84,8 @@ type Client struct {
 
 // serviceCACertFile is the path the operator's Deployment mounts an
 // OpenShift-injected service-serving CA bundle to (see
-// manager/deploy/service-ca-configmap.yaml and manager/deploy/deployment.yaml).
+// controllers.EnsurePrerequisites, which creates the ConfigMap this comes
+// from, and manager/deploy/deployment.yaml, which mounts it).
 // serviceAccountTokenFile is the path Kubernetes auto-mounts a bearer token
 // into every pod at. Neither has a flag or Config field to override -
 // trusting/sending them, when present, happens automatically. If either
@@ -116,6 +117,37 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("creating prometheus client for %q: %w", cfg.Address, err)
 	}
 	return &Client{api: promv1.NewAPI(c)}, nil
+}
+
+// WaitForServiceCA polls for serviceCACertFile to appear, up to timeout,
+// returning true if it showed up in time. Intended to be called once at
+// startup, right after the operator creates its own service-ca ConfigMap
+// (see controllers.EnsurePrerequisites) - the file only appears once both
+// the service-ca operator injects the bundle into that ConfigMap AND
+// kubelet syncs the mounted (optional) volume, neither of which is instant
+// on a cluster where the ConfigMap didn't already exist before this pod
+// started. A timeout here is not a hard failure: buildTransport falls back
+// to the system trust store exactly as if the file were never going to
+// exist, and a later pod restart (or kubelet's own periodic resync) picks
+// up the CA whenever it does show up - this just avoids the far more
+// likely first-boot race where every reconcile until then would otherwise
+// permanently cache a client built against the wrong trust store (see
+// GpuBudgetReconciler.prometheusClient's per-URL cache).
+func WaitForServiceCA(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(serviceCACertFile); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func buildTransport() (http.RoundTripper, error) {

@@ -14,6 +14,12 @@
 #   - no --leader-elect - single replica for local testing, and there's no
 #     RBAC anywhere in this repo for the coordination.k8s.io Lease that flag
 #     requires (a real gap even for OpenShift; not specific to this cluster)
+#
+# POD_NAMESPACE is still set below, so this cluster also exercises
+# controllers.EnsurePrerequisites - harmlessly here, since kind has neither
+# a service-ca operator to populate the ConfigMap it creates nor a
+# cluster-monitoring-view ClusterRole for the ClusterRoleBinding to
+# meaningfully bind to.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,6 +44,11 @@ spec:
         imagePullPolicy: IfNotPresent
         command:
         - /manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         resources:
           limits:
             cpu: 500m

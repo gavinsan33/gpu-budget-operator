@@ -60,21 +60,13 @@ spec:
     every `GpuBudget` reports `status.phase: Unknown` until it exists, and
     editing it later takes effect immediately with no restart.
 
-    **Before installing via OLM**, two cluster-admin prerequisites are NOT
-    covered by this bundle (matching this project's existing bootstrap/deploy
-    split - see `manager/bootstrap/` in the repo):
-    1. The target namespace's `gpu-budget-operator-service-ca` ConfigMap
-       (annotated for OpenShift's service-ca operator to inject the cluster's
-       service-serving CA bundle into) - the operator mounts this and always
-       trusts it if present, falling back to the system trust store only if
-       it's absent.
-    2. A `ClusterRoleBinding` granting this operator's ServiceAccount
-       OpenShift's built-in `cluster-monitoring-view` ClusterRole, so it can
-       actually read from the cluster's Thanos Querier. OLM's
-       `clusterPermissions` can only grant rules this CSV defines itself, not
-       bind to a pre-existing external ClusterRole by name - so this stays a
-       one-time `oc apply -f manager/bootstrap/monitoring_rolebinding.yaml`
-       (or equivalent) alongside the Subscription.
+    No other manual setup is required. Two things OLM's install strategy has
+    no mechanism to create itself - the target namespace's
+    `gpu-budget-operator-service-ca` ConfigMap (annotated for OpenShift's
+    service-ca operator to inject the cluster's service-serving CA bundle
+    into) and a `ClusterRoleBinding` granting this operator's ServiceAccount
+    OpenShift's built-in `cluster-monitoring-view` ClusterRole - are
+    self-provisioned by the operator itself at startup instead.
   version: 0.1.0
   maturity: alpha
   provider:
@@ -280,6 +272,37 @@ spec:
           - list
           - watch
           - delete
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterrolebindings
+          verbs:
+          - create
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - clusterroles
+          resourceNames:
+          - cluster-monitoring-view
+          verbs:
+          - bind
+      permissions:
+      # Namespace-scoped (OLM binds this via a Role+RoleBinding in whatever
+      # namespace the Subscription installs into, not cluster-wide) -
+      # EnsurePrerequisites only ever creates the service-ca ConfigMap in
+      # the operator's own namespace, never cluster-wide, so this
+      # deliberately isn't folded into clusterPermissions above. No
+      # get/update/list/watch verb either - EnsurePrerequisites only ever
+      # calls Create and treats AlreadyExists as success, so no other verb
+      # is actually used.
+      - serviceAccountName: gpu-budget-operator-controller-manager
+        rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - create
       deployments:
       - name: gpu-budget-operator-controller-manager
         label:
@@ -305,6 +328,11 @@ spec:
                 - /manager
                 args:
                 - --leader-elect
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
                 volumeMounts:
                 - name: service-ca
                   mountPath: /etc/gpu-budget-operator/service-ca
@@ -326,3 +354,4 @@ spec:
               - name: service-ca
                 configMap:
                   name: gpu-budget-operator-service-ca
+                  optional: true

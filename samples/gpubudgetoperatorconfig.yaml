@@ -13,8 +13,9 @@ spec:
   # The single, cluster-wide Prometheus/Thanos endpoint every GpuBudget is
   # evaluated against - there is no per-namespace override. This default
   # targets OpenShift's built-in monitoring stack, which requires the
-  # cluster-monitoring-view ClusterRoleBinding
-  # (manager/bootstrap/monitoring_rolebinding.yaml).
+  # cluster-monitoring-view ClusterRoleBinding - the operator creates this
+  # itself at startup (see controllers.EnsurePrerequisites), no manual
+  # setup needed.
   prometheusURL: https://thanos-querier.openshift-monitoring.svc:9091
   # $/GPU-hour rates, only required if any GpuBudget sets spec.dollarsLimit
   # and actually uses that GPU family - REPLACE these placeholder values
