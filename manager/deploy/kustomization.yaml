@@ -12,5 +12,6 @@ kind: Kustomization
 # cleanly before that first-boot self-provisioning happens.
 resources:
 - service_account.yaml
+- configmap_role.yaml
 - build.yaml
 - deployment.yaml

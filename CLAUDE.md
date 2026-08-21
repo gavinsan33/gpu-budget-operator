@@ -442,16 +442,35 @@ both instead (`controllers.EnsurePrerequisites`, called once at startup):
   pre-existing external ClusterRole like OpenShift's built-in
   `cluster-monitoring-view` by name.
 
-Both are ordinary `create` RBAC rules in `clusterPermissions` (plus a
-`bind` rule on `clusterroles`, `resourceNames: [cluster-monitoring-view]` -
-required because Kubernetes' RBAC escalation check otherwise refuses to let
-a ServiceAccount create a ClusterRoleBinding to a ClusterRole whose
-permissions it doesn't already have itself), scoped as tightly as the
-Kubernetes RBAC model allows: `create` can't be restricted by
-`resourceNames` (the object doesn't exist yet when the check runs), but
-`get`/`update` on the ConfigMap and `get` on the ClusterRoleBinding are both
-pinned to their one specific object name, so this can't be used to touch
-any *other* ConfigMap or ClusterRoleBinding in the cluster.
+`EnsurePrerequisites` only ever calls `Create` (treating `AlreadyExists` as
+success - no `Get`/`Update` anywhere), so only `create` is granted for
+either object; there was an earlier draft of this that also granted
+`get`/`update` "for idempotency" before anything actually called them -
+removed once audited, since a permission a real request never exercises is
+pure attack surface with no offsetting benefit. `create` can't be
+restricted by `resourceNames` (the object doesn't exist yet when the check
+runs), so both rules are otherwise as tight as Kubernetes' RBAC model
+allows:
+- `clusterrolebindings: [create]` is unavoidably unscoped, but in practice
+  constrained by the `bind` rule below: creating a ClusterRoleBinding to
+  any ClusterRole *other* than `cluster-monitoring-view` would fail
+  Kubernetes' own RBAC escalation check anyway, since this ServiceAccount
+  doesn't already possess that other role's permissions.
+- `clusterroles: [bind]` is pinned via `resourceNames:
+  [cluster-monitoring-view]` - required at all because Kubernetes' RBAC
+  escalation check otherwise refuses to let a ServiceAccount create a
+  ClusterRoleBinding to a ClusterRole whose permissions it doesn't already
+  have itself.
+- `configmaps: [create]` is **namespace-scoped**, not part of
+  `clusterPermissions` at all: `manager/deploy/configmap_role.yaml` (a
+  `Role`+`RoleBinding` in `gpu-budget-operator-system` only, applied via
+  `make deploy`) for the manual path, and the CSV's `install.spec.permissions`
+  (which OLM binds only within whatever namespace the Subscription installs
+  into) for the OLM path. `EnsurePrerequisites` only ever creates this
+  ConfigMap in the operator's own namespace - granting it via the
+  cluster-scoped `ClusterRole` in `manager/bootstrap/role.yaml` instead
+  would let the ServiceAccount create a ConfigMap in *any* namespace on the
+  cluster, which is broader than what's actually used.
 
 The Deployment's ConfigMap volume is `optional: true` specifically to break
 the chicken-and-egg problem this creates: the pod has to actually start

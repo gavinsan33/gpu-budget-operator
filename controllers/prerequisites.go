@@ -38,10 +38,19 @@ const (
 	monitoringClusterRoleName = "cluster-monitoring-view"
 )
 
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create
-// +kubebuilder:rbac:groups="",resources=configmaps,resourceNames=gpu-budget-operator-service-ca,verbs=get;update
+// RBAC for the two Create calls below - both idempotent (AlreadyExists
+// tolerated, see the doc comment), so no get/update/list/watch verb is
+// ever actually used and none is granted:
+//   - configmaps/create is namespace-scoped (manager/deploy/configmap_role.yaml's
+//     Role+RoleBinding, or the CSV's namespace-scoped `permissions`) -
+//     EnsurePrerequisites only ever creates this ConfigMap in the
+//     operator's own namespace, never cluster-wide, so this must NOT be
+//     folded into the cluster-scoped ClusterRole below.
+//   - clusterrolebindings/create and clusterroles/bind are cluster-scoped
+//     out of necessity (ClusterRoleBinding/ClusterRole have no namespaced
+//     equivalent) - see manager/bootstrap/role.yaml.
+//
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=gpu-budget-operator-monitoring-view,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames=cluster-monitoring-view,verbs=bind
 
 // EnsurePrerequisites creates, if missing, the two objects this operator

@@ -273,34 +273,11 @@ spec:
           - watch
           - delete
         - apiGroups:
-          - ""
-          resources:
-          - configmaps
-          verbs:
-          - create
-        - apiGroups:
-          - ""
-          resources:
-          - configmaps
-          resourceNames:
-          - gpu-budget-operator-service-ca
-          verbs:
-          - get
-          - update
-        - apiGroups:
           - rbac.authorization.k8s.io
           resources:
           - clusterrolebindings
           verbs:
           - create
-        - apiGroups:
-          - rbac.authorization.k8s.io
-          resources:
-          - clusterrolebindings
-          resourceNames:
-          - gpu-budget-operator-monitoring-view
-          verbs:
-          - get
         - apiGroups:
           - rbac.authorization.k8s.io
           resources:
@@ -309,6 +286,23 @@ spec:
           - cluster-monitoring-view
           verbs:
           - bind
+      permissions:
+      # Namespace-scoped (OLM binds this via a Role+RoleBinding in whatever
+      # namespace the Subscription installs into, not cluster-wide) -
+      # EnsurePrerequisites only ever creates the service-ca ConfigMap in
+      # the operator's own namespace, never cluster-wide, so this
+      # deliberately isn't folded into clusterPermissions above. No
+      # get/update/list/watch verb either - EnsurePrerequisites only ever
+      # calls Create and treats AlreadyExists as success, so no other verb
+      # is actually used.
+      - serviceAccountName: gpu-budget-operator-controller-manager
+        rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - create
       deployments:
       - name: gpu-budget-operator-controller-manager
         label:

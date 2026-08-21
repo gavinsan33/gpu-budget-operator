@@ -106,35 +106,18 @@ rules:
   - list
   - watch
   - delete
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  resourceNames:
-  - gpu-budget-operator-service-ca
-  verbs:
-  - get
-  - update
+# configmaps/create is deliberately NOT here - EnsurePrerequisites only
+# ever creates the service-ca ConfigMap in the operator's OWN namespace,
+# never cluster-wide, so it's a namespace-scoped Role instead (role.yaml in
+# manager/deploy/, bound only in gpu-budget-operator-system) rather than
+# folded into this ClusterRole, which would grant create-any-ConfigMap
+# cluster-wide - broader than what's actually used.
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - clusterrolebindings
   verbs:
   - create
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - clusterrolebindings
-  resourceNames:
-  - gpu-budget-operator-monitoring-view
-  verbs:
-  - get
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:
