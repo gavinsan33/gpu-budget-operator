@@ -231,9 +231,10 @@ built-in monitoring stack (Thanos Querier over HTTPS), which requires both a
 Bearer token and a trusted TLS certificate - the operator does not get this
 "for free" just by running in-cluster. Three pieces make it work together:
 
-1. **RBAC**: `manager/bootstrap/monitoring_rolebinding.yaml` binds the
-   operator's ServiceAccount to OpenShift's built-in `cluster-monitoring-view`
-   ClusterRole, so its token is actually authorized to read metrics.
+1. **RBAC**: the operator creates its own `ClusterRoleBinding` (named
+   `gpu-budget-operator-monitoring-view`) to OpenShift's built-in
+   `cluster-monitoring-view` ClusterRole at startup, if one doesn't already
+   exist - see `controllers.EnsurePrerequisites`. Nothing to apply manually.
 2. **Token**: automatic, with no flag or config to override it. Kubernetes
    auto-mounts a Bearer token into every pod at
    `/var/run/secrets/kubernetes.io/serviceaccount/token`; the operator
@@ -241,25 +242,26 @@ Bearer token and a trusted TLS certificate - the operator does not get this
    <token>` if present, falling back to an unauthenticated request if not
    (e.g. running locally outside a pod, or against a dev Prometheus that
    doesn't require auth).
-3. **TLS trust**: also automatic, with no flag or config to override it.
-   `manager/deploy/service-ca-configmap.yaml` creates a ConfigMap annotated
+3. **TLS trust**: also automatic. The operator creates the
+   `gpu-budget-operator-service-ca` ConfigMap itself at startup (annotated
    for OpenShift's service-ca operator to inject the cluster's
-   service-serving CA into; `manager/deploy/deployment.yaml` mounts it at
-   `/etc/gpu-budget-operator/service-ca/service-ca.crt`, and the operator
-   always looks for a CA bundle at that fixed path, trusting it if present
-   and falling back to the system trust store if not. There's no way to
-   disable TLS verification - if you need that for local testing against a
-   self-signed dev Prometheus, do it outside the operator (e.g. terminate
-   TLS at a local proxy instead).
+   service-serving CA into, same as RBAC above) if it doesn't already
+   exist; `manager/deploy/deployment.yaml` mounts it (as an `optional`
+   volume, so the pod still starts before that first-boot self-provisioning
+   completes) at `/etc/gpu-budget-operator/service-ca/service-ca.crt`, and
+   the operator always looks for a CA bundle at that fixed path, trusting it
+   if present and falling back to the system trust store if not. There's no
+   way to disable TLS verification - if you need that for local testing
+   against a self-signed dev Prometheus, do it outside the operator (e.g.
+   terminate TLS at a local proxy instead).
 
 Not on OpenShift, or using a different Prometheus? Edit `spec.prometheusURL`
-on the `GpuBudgetOperatorConfig` to your endpoint, and drop or adjust
-`manager/bootstrap/monitoring_rolebinding.yaml`/
-`manager/deploy/service-ca-configmap.yaml` to match how that Prometheus
-authenticates (or doesn't). If it isn't behind OpenShift's service-ca and
-uses a certificate from a public CA (or plain HTTP) and doesn't require
-auth, no changes are needed - the fallback to the system trust store and to
-an unauthenticated request both happen automatically.
+on the `GpuBudgetOperatorConfig` to your endpoint. If it isn't behind
+OpenShift's service-ca and uses a certificate from a public CA (or plain
+HTTP) and doesn't require auth, no further changes are needed - the
+fallback to the system trust store and to an unauthenticated request both
+happen automatically, and the two self-provisioned objects above end up
+inert (harmless) rather than something you need to remove.
 
 ## Install
 
@@ -307,19 +309,17 @@ Deployment and `manager/bootstrap/role.yaml`'s ClusterRole/ClusterRoleBinding
 inside a `ClusterServiceVersion` — OLM applies both for you as part of the
 Subscription, same as `make deploy`/`make bootstrap` do manually.
 
-Two things `make bootstrap` normally covers are **not** part of the OLM
-bundle, since OLM's install strategy has no mechanism for either, and must
-still be applied once, out of band, before subscribing:
-- `manager/deploy/service-ca-configmap.yaml` — the ConfigMap OpenShift's
-  service-ca operator injects the cluster's serving CA bundle into.
-- `manager/bootstrap/monitoring_rolebinding.yaml` — the ClusterRoleBinding
-  to OpenShift's pre-existing `cluster-monitoring-view` ClusterRole (OLM's
-  `clusterPermissions` can only grant rules the CSV defines itself, not bind
-  to an existing external ClusterRole by name).
+Two things `make bootstrap` normally covers - the service-ca ConfigMap and
+the ClusterRoleBinding to OpenShift's `cluster-monitoring-view` ClusterRole
+- have no OLM install-strategy equivalent (a CSV can't tell OLM to create a
+plain ConfigMap, or bind to a pre-existing external ClusterRole by name),
+but nothing needs to be applied manually for either: the operator
+self-provisions both itself at startup (`controllers.EnsurePrerequisites`),
+using RBAC the CSV's `clusterPermissions` does grant it. Installing via OLM
+is genuinely just: build/push the bundle+catalog, subscribe, then create a
+`GpuBudgetOperatorConfig`.
 
 ```
-oc apply -f manager/deploy/service-ca-configmap.yaml
-oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
 make bundle-validate   # validate bundle/ with operator-sdk before building
 make bundle-build      # build the bundle image from bundle.Dockerfile
 make bundle-push       # push it - required before the catalog can reference it

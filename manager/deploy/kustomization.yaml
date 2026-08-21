@@ -5,8 +5,12 @@ kind: Kustomization
 # gpu-budget-operator-system (not cluster-admin) can apply repeatedly via
 # `make deploy` without ever touching the cluster-scoped objects in
 # ../bootstrap/.
+#
+# No service-ca-configmap.yaml here anymore - the operator creates that
+# ConfigMap itself at startup (see controllers.EnsurePrerequisites);
+# deployment.yaml's volume mounts it as optional so the pod still starts
+# cleanly before that first-boot self-provisioning happens.
 resources:
 - service_account.yaml
-- service-ca-configmap.yaml
 - build.yaml
 - deployment.yaml

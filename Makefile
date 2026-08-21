@@ -174,12 +174,12 @@ undeploy: ## Undeploy the namespace-scoped resources. Leaves the CRD/Namespace/R
 # instead. The CRD copy in bundle/manifests IS generated - `bundle-manifests`
 # just syncs it from config/crd after `make manifests` runs.
 #
-# The CSV intentionally omits two cluster-admin prerequisites that OLM's
-# install strategy has no mechanism for: the service-ca ConfigMap
-# (manager/deploy/service-ca-configmap.yaml) and the ClusterRoleBinding to
-# OpenShift's pre-existing cluster-monitoring-view ClusterRole
-# (manager/bootstrap/monitoring_rolebinding.yaml) - see the CSV's own
-# description field for why. Apply both once before subscribing.
+# Two cluster-admin prerequisites OLM's install strategy has no mechanism
+# to create itself - the service-ca ConfigMap and the ClusterRoleBinding to
+# OpenShift's pre-existing cluster-monitoring-view ClusterRole - are
+# self-provisioned by the operator at startup instead (see
+# controllers.EnsurePrerequisites) rather than requiring a human to
+# `oc apply` either after subscribing.
 
 BUNDLE_IMG ?= image-registry.openshift-image-registry.svc:5000/gpu-budget-operator-system/gpu-budget-operator-bundle:latest
 
@@ -240,14 +240,12 @@ catalog-push: ## Push the catalog image built by catalog-build.
 	podman push $(CATALOG_IMG)
 
 .PHONY: catalog-deploy
-catalog-deploy: ## Apply the CatalogSource/OperatorGroup/Subscription. Requires make bootstrap's namespace, manager/deploy/service-ca-configmap.yaml, and manager/bootstrap/monitoring_rolebinding.yaml to already be applied, and CATALOG_IMG to already be pushed.
+catalog-deploy: ## Apply the CatalogSource/OperatorGroup/Subscription. Requires make bootstrap's namespace to already be applied, and CATALOG_IMG to already be pushed.
 	oc apply -f manager/bootstrap/namespace.yaml
-	oc apply -f manager/deploy/service-ca-configmap.yaml
-	oc apply -f manager/bootstrap/monitoring_rolebinding.yaml
 	oc apply -k manager/olm/
 
 .PHONY: catalog-undeploy
-catalog-undeploy: ## Remove the CatalogSource/OperatorGroup/Subscription (and, via OLM, the CSV it installed). Leaves the namespace/service-ca/monitoring-binding in place.
+catalog-undeploy: ## Remove the CatalogSource/OperatorGroup/Subscription (and, via OLM, the CSV it installed). Leaves the namespace in place.
 	oc delete -k manager/olm/
 
 ##@ Build Dependencies

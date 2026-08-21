@@ -5,8 +5,12 @@ kind: Kustomization
 # RBAC an operator-deploying user often doesn't have day-to-day. Applied
 # once via `make bootstrap` by a cluster-admin; `make deploy` never touches
 # this directory, so routine redeploys don't need these permissions.
+#
+# No monitoring_rolebinding.yaml here anymore - the operator creates that
+# ClusterRoleBinding itself at startup (see controllers.EnsurePrerequisites
+# and role.yaml's clusterrolebindings/clusterroles rules below), since
+# nothing else in this kustomization needs to grant it directly.
 resources:
 - namespace.yaml
 - role.yaml
 - role_binding.yaml
-- monitoring_rolebinding.yaml

@@ -170,15 +170,16 @@ either path or skip verification/auth - `serviceCACertFile` and
 is ever reassigned outside tests.
 
 The RBAC binding this requires (OpenShift's built-in `cluster-monitoring-view`
-ClusterRole) lives in `manager/bootstrap/monitoring_rolebinding.yaml`
-(cluster-scoped, applied by `make bootstrap`); the CA bundle this needs
-mounted (via `service.beta.openshift.io/inject-cabundle: "true"` on a
-ConfigMap the service-ca operator populates) lives in
-`manager/deploy/service-ca-configmap.yaml` (namespace-scoped, applied by
-`make deploy`), and `manager/deploy/deployment.yaml` mounts that ConfigMap
-at the exact path `serviceCACertFile` expects. None of this is required for
-a non-OpenShift Prometheus that doesn't sit behind an auth proxy; those two
-manifests are the only OpenShift-specific pieces of the whole operator.
+ClusterRole) and the ConfigMap the CA bundle needs mounted (annotated
+`service.beta.openshift.io/inject-cabundle: "true"` for the service-ca
+operator to populate) are both self-provisioned by the operator itself at
+startup - see `controllers.EnsurePrerequisites` and its own "OLM bundle"
+architecture note below for why, rather than living as static manifests a
+human applies. `manager/deploy/deployment.yaml` mounts that ConfigMap (as
+`optional: true`, so the pod starts fine before that first-boot
+self-provisioning completes) at the exact path `serviceCACertFile` expects.
+None of this is required for a non-OpenShift Prometheus that doesn't sit
+behind an auth proxy - both self-provisioned objects just end up inert.
 
 ### GPU-hours accounting (`metrics.DefaultGPUHoursQueryTemplate`)
 
@@ -428,16 +429,43 @@ restriction) - this maps directly onto the CSV's `clusterPermissions` (not
 `permissions`, which OLM scopes to one namespace) and `installModes:
 AllNamespaces: true`.
 
-Two cluster-admin prerequisites from `manager/bootstrap/` are **not**
-representable in the CSV and stay manual, applied once before subscribing
-(see README's "Install via OLM"):
-- `manager/deploy/service-ca-configmap.yaml` - OLM's install strategy only
-  knows how to create Deployments/(Cluster)Roles/(Cluster)RoleBindings/
+Two things OLM's install strategy has no mechanism to create itself are
+**not** representable in the CSV, and used to require a human to `oc
+apply` a manifest before subscribing - the operator now self-provisions
+both instead (`controllers.EnsurePrerequisites`, called once at startup):
+- The `gpu-budget-operator-service-ca` ConfigMap - OLM's install strategy
+  only knows how to create Deployments/(Cluster)Roles/(Cluster)RoleBindings/
   ServiceAccounts, not arbitrary ConfigMaps.
-- `manager/bootstrap/monitoring_rolebinding.yaml` - OLM's `clusterPermissions`
-  only lets a CSV grant rules it defines itself as a new ClusterRole; it has
-  no way to bind the operator's ServiceAccount to a pre-existing external
-  ClusterRole like OpenShift's built-in `cluster-monitoring-view` by name.
+- The `gpu-budget-operator-monitoring-view` ClusterRoleBinding - OLM's
+  `clusterPermissions` only lets a CSV grant rules it defines itself as a
+  new ClusterRole; it has no way to bind the operator's ServiceAccount to a
+  pre-existing external ClusterRole like OpenShift's built-in
+  `cluster-monitoring-view` by name.
+
+Both are ordinary `create` RBAC rules in `clusterPermissions` (plus a
+`bind` rule on `clusterroles`, `resourceNames: [cluster-monitoring-view]` -
+required because Kubernetes' RBAC escalation check otherwise refuses to let
+a ServiceAccount create a ClusterRoleBinding to a ClusterRole whose
+permissions it doesn't already have itself), scoped as tightly as the
+Kubernetes RBAC model allows: `create` can't be restricted by
+`resourceNames` (the object doesn't exist yet when the check runs), but
+`get`/`update` on the ConfigMap and `get` on the ClusterRoleBinding are both
+pinned to their one specific object name, so this can't be used to touch
+any *other* ConfigMap or ClusterRoleBinding in the cluster.
+
+The Deployment's ConfigMap volume is `optional: true` specifically to break
+the chicken-and-egg problem this creates: the pod has to actually start
+(and run `EnsurePrerequisites`) before the ConfigMap it mounts can exist,
+so a non-optional mount would leave every fresh install stuck in
+`ContainerCreating` forever. `main.go` also does a bounded (60s) poll after
+creating the ConfigMap for the CA file to actually land on disk before
+starting the manager - `metrics.WaitForServiceCA` - since
+`GpuBudgetReconciler.prometheusClient` caches its underlying `http.Client`
+per URL and would otherwise never notice the CA becoming available shortly
+after the first reconcile already built one against the system trust store
+without it; see that function's own comment for the residual risk (a
+timeout still falls back to the system trust store rather than blocking
+startup indefinitely).
 
 The CSV's container image is a fixed reference to the in-cluster OpenShift
 registry image built by `manager/deploy/build.yaml`'s BuildConfig
